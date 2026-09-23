@@ -1,0 +1,59 @@
+{
+  "env": {
+    "timestamp": "2026-07-04T12:16:42.663534",
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "python_version": "3.14.4"
+  },
+  "latency_stats": [
+    {
+      "name": "Session Creation",
+      "count": 100,
+      "mean": 0.013931168941780925,
+      "median": 0.011291500413790345,
+      "min": 0.010124989785254002,
+      "max": 0.11158300912939012,
+      "p95": 0.029447299311868846,
+      "p99": 0.11085717909736559,
+      "stdev": 0.011210848486399961,
+      "unit": "ms",
+      "status": "MEASURED"
+    },
+    {
+      "name": "Session Lookup",
+      "count": 100,
+      "mean": 0.00019904080545529723,
+      "median": 0.000166997779160738,
+      "min": 8.300412446260452e-05,
+      "max": 0.0018330174498260021,
+      "p95": 0.00037290301406756043,
+      "p99": 0.0018217673641629517,
+      "stdev": 0.0001839896059714032,
+      "unit": "ms",
+      "status": "MEASURED"
+    },
+    {
+      "name": "Deepgram STT",
+      "status": "NOT MEASURED"
+    },
+    {
+      "name": "Groq LLM",
+      "status": "NOT MEASURED"
+    },
+    {
+      "name": "ElevenLabs TTS",
+      "status": "NOT MEASURED"
+    }
+  ],
+  "cpu": {
+    "cpu_idle": 22.3,
+    "cpu_peak": 22.3,
+    "cpu_avg": 22.3
+  },
+  "memory": {
+    "current_kb": 51.80859375,
+    "peak_kb": 55.115234375
+  },
+  "throughput": {
+    "sessions_per_sec": 74821.59729569519
+  }
+}

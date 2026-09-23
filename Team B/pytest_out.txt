@@ -1,0 +1,192 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.4, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/rahulmanchanda/Desktop/REAL-TIME-VOICE-PIPELINE
+plugins: anyio-4.14.0, cov-7.1.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 3 items
+
+tests/test_e2e_integration.py F.F                                        [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_scenario_1_happy_path __________________________
+
+    @pytest.mark.asyncio
+    async def test_scenario_1_happy_path() -> None:
+        """Scenario 1: Create Session -> Conversation starts -> Pipeline builds -> Runner starts -> Pipeline completes -> Session closes"""
+        bus = EventBus()
+        session_manager = SessionManager()
+    
+        # Create session
+        session = session_manager.create_session()
+        session_id = session.session_id
+    
+        # Start conversation FSM
+        fsm = ConversationStateMachine(session_id=session_id)
+>       fsm.start_listening()
+        ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'ConversationStateMachine' object has no attribute 'start_listening'
+
+tests/test_e2e_integration.py:38: AttributeError
+----------------------------- Captured stderr call -----------------------------
+2026-07-03 23:39:50.194 | INFO     | app.session.manager:__init__:76 - SessionManager initialised (in-memory store)
+2026-07-03 23:39:50.194 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.194 | INFO     | app.conversation.state_machine:__init__:83 - ConversationStateMachine initialised | state=idle
+_____________________ test_scenario_5_concurrent_sessions ______________________
+
+    @pytest.mark.asyncio
+    async def test_scenario_5_concurrent_sessions() -> None:
+        """Scenario 5: Multiple concurrent sessions -> Independent pipelines."""
+        bus = EventBus()
+        session_manager = SessionManager()
+    
+        async def run_session(idx: int) -> None:
+            session = session_manager.create_session()
+            builder = PipelineBuilder(bus, session.session_id)
+            builder.add_processor(ProcessorNode(f"STT_{idx}", ProcessorRole.STT))
+            pipeline = builder.build()
+            adapter = PipecatFactory.create_adapter(pipeline, bus, session.session_id, f"exec_{idx}")
+            await adapter.run()
+            session_manager.delete_session(session.session_id)
+    
+        await asyncio.gather(*(run_session(i) for i in range(10)))
+>       assert len(session_manager.get_active_sessions()) == 0
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'SessionManager' object has no attribute 'get_active_sessions'
+
+tests/test_e2e_integration.py:110: AttributeError
+----------------------------- Captured stderr call -----------------------------
+2026-07-03 23:39:50.213 | INFO     | app.session.manager:__init__:76 - SessionManager initialised (in-memory store)
+2026-07-03 23:39:50.213 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.213 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.213 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_0
+2026-07-03 23:39:50.213 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.213 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.213 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.213 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.213 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline f096b6e7-b1f5-4caa-9a0b-4cd9077a4f18 to Pipecat format
+2026-07-03 23:39:50.213 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.213 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_1
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline 18d66dea-011c-4024-9e6b-64839d167da7 to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_2
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline ae2ee968-f03d-4473-b461-ec84ff440b1b to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_3
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline ea3f46b1-9532-4092-9cbe-66981b2c2ad0 to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_4
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline af1ca14f-c04d-49d7-bc17-a7c5897291cc to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_5
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline e0eec07d-ee2f-435e-82b2-2f1eef223ff0 to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_6
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline 893bbbbb-eaf8-4378-8e47-71b0987231d1 to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_7
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline 794ef81b-44b4-4093-b62f-22d1978ab900 to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_8
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline 14cf7de0-3178-4402-b42d-28c690916e78 to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.214 | INFO     | app.session.manager:create_session:97 - Session created | state=idle
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:__init__:48 - PipelineBuilder initialized
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:add_processor:65 - Added processor: STT_9
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:build:220 - Pipeline build started
+2026-07-03 23:39:50.214 | DEBUG    | app.pipeline.builder:validate:208 - Pipeline validation passed
+2026-07-03 23:39:50.214 | INFO     | app.pipeline.builder:build:231 - Pipeline successfully built
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:_build_task:67 - Building Pipecat adapter task
+2026-07-03 23:39:50.214 | DEBUG    | app.adapters.pipecat.mapper:map_pipeline:27 - Converting pipeline 11f9d846-6fd2-4f1f-b341-67de1d68513c to Pipecat format
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.adapter:run:91 - Running Pipecat adapter
+2026-07-03 23:39:50.214 | INFO     | app.adapters.pipecat.lifecycle:start:20 - Starting Pipecat task
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+2026-07-03 23:39:50.225 | INFO     | app.adapters.pipecat.lifecycle:stop:28 - Stopping Pipecat task
+2026-07-03 23:39:50.225 | DEBUG    | app.adapters.pipecat.lifecycle:wait_until_done:36 - Waiting for Pipecat task to finish
+2026-07-03 23:39:50.225 | INFO     | app.session.manager:delete_session:147 - Session deleted | messages=0 | duration=0.0s
+=========================== short test summary info ============================
+FAILED tests/test_e2e_integration.py::test_scenario_1_happy_path - AttributeE...
+FAILED tests/test_e2e_integration.py::test_scenario_5_concurrent_sessions - A...
+========================= 2 failed, 1 passed in 0.05s ==========================
