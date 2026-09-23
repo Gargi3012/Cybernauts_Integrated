@@ -1,0 +1,52 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+Team B/venv/
+Team A/venv/
+*/venv/
+*/.venv/
+
+# Python caches & temporary files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*$py.class
+.pytest_cache/
+*.pytest_cache/
+.cache/
+.coverage
+htmlcov/
+
+# Logs and Debug files
+logs/
+*.log
+server_logs.txt
+debug_html/
+google_debug/
+google_samples/
+google_debug_last_zero.html
+google_raw.html
+
+# Runtime databases
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+leads.db
+
+# OS & IDE artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

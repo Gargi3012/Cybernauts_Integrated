@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flowiz — AI Lead Intelligence & OSINT Investigation Platform</title>
+  <link rel="icon" type="image/png" href="Flowiz.png">
+  
+  <!-- Typography: Plus Jakarta Sans, Manrope, Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- FontAwesome 6 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  
+  <!-- Design System & Components -->
+  <link rel="stylesheet" href="css/theme.css">
+  <link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+  <div class="app-layout">
+    
+    <!-- Collapsible Technical Sidebar -->
+    <aside class="sidebar" id="appSidebar">
+      <div class="sidebar-brand">
+        <img src="Flowiz.png" alt="Flowiz" class="sidebar-logo-img" />
+        <div class="sidebar-brand-text">
+          <div class="sidebar-brand-sub font-mono" style="margin-top:2px;">AI INTELLIGENCE</div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="sidebar-section-title">Core Operations</div>
+        <a href="#overview" class="sidebar-link active" data-view="overview">
+          <i class="fa-solid fa-gauge"></i>
+          <span>Overview</span>
+        </a>
+        <a href="#discover" class="sidebar-link" data-view="discover">
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+          <span>Discover</span>
+        </a>
+        <a href="#leads" class="sidebar-link" data-view="leads">
+          <i class="fa-solid fa-address-book"></i>
+          <span>Leads</span>
+          <span class="sidebar-badge font-mono" id="sidebarLeadCount">218</span>
+        </a>
+        <a href="#searchIntel" class="sidebar-link" data-view="searchIntel">
+          <i class="fa-solid fa-brain"></i>
+          <span>Search Intelligence</span>
+        </a>
+
+        <div class="sidebar-section-title">Enrichment & Pipeline</div>
+        <a href="#osint" class="sidebar-link" data-view="osint">
+          <i class="fa-solid fa-satellite"></i>
+          <span>OSINT Providers</span>
+        </a>
+        <a href="#pipeline" class="sidebar-link" data-view="pipeline">
+          <i class="fa-solid fa-diagram-project"></i>
+          <span>Pipeline Monitor</span>
+        </a>
+        <a href="#analytics" class="sidebar-link" data-view="analytics">
+          <i class="fa-solid fa-chart-column"></i>
+          <span>Analytics</span>
+        </a>
+
+        <div class="sidebar-section-title">System & Diagnostics</div>
+        <a href="#health" class="sidebar-link" data-view="health">
+          <i class="fa-solid fa-heart-pulse"></i>
+          <span>System Health</span>
+        </a>
+        <a href="#settings" class="sidebar-link" data-view="settings">
+          <i class="fa-solid fa-sliders"></i>
+          <span>Settings</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+          <span class="font-mono text-muted">v2.0 • Light Theme</span>
+          <button id="btnToggleSidebar" class="btn btn-secondary btn-sm" style="padding: 4px 8px; font-size: 11px;" title="Toggle Sidebar Width">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Application Canvas -->
+    <div class="main-wrapper">
+      
+      <!-- Top Persistent Bar -->
+      <header class="topbar">
+        <!-- Left: Breadcrumb Indicator -->
+        <div class="topbar-left">
+          <div class="topbar-breadcrumbs">
+            <i class="fa-solid fa-sparkles" style="color: var(--flowiz-primary-purple);"></i>
+            <span>Platform</span>
+            <span class="breadcrumb-separator">/</span>
+            <span class="breadcrumb-current" id="currentBreadcrumb">Overview Dashboard</span>
+          </div>
+        </div>
+
+        <!-- Center: Global Omnibar Search (Cmd+K) -->
+        <div class="topbar-center">
+          <div class="omnibar">
+            <i class="fa-solid fa-magnifying-glass omnibar-icon"></i>
+            <input 
+              type="text" 
+              id="globalSearchInput" 
+              class="omnibar-input font-mono" 
+              placeholder="Search companies, domains, people, or keywords..."
+            />
+            <div class="omnibar-shortcut">
+              <span class="kbd">⌘</span>
+              <span class="kbd">K</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Real-time System Status Pill & Action Button -->
+        <div class="topbar-right">
+          <div id="topbarStatusPill" class="status-pill">
+            <span class="status-indicator status-indicator-idle"></span>
+            <span>All Systems Operational</span>
+          </div>
+          <button class="btn btn-primary btn-sm" id="btnHeaderAction">
+            <span>Login / Access</span>
+            <i class="fa-solid fa-arrow-up-right-from-square" style="font-size: 11px;"></i>
+          </button>
+        </div>
+      </header>
+
+      <!-- Dynamic View Ingestion Canvas -->
+      <main class="content-area">
+        <div id="viewContainer">
+          <!-- Views dynamically rendered here -->
+          <div class="loading-state" style="padding: 100px 0; text-align: center;">
+            <i class="fa-solid fa-circle-notch fa-spin text-accent" style="font-size: 32px; margin-bottom: 16px;"></i>
+            <div class="text-secondary" style="font-size: 14px;">Loading Flowiz Intelligence Workspace...</div>
+          </div>
+        </div>
+      </main>
+
+    </div>
+  </div>
+
+  <!-- Modal / Drawer Container -->
+  <div id="modalContainer"></div>
+
+  <!-- Application Logic & Modular Views -->
+  <script src="js/api.js"></script>
+  <script src="js/state.js"></script>
+  <script src="js/views/overview.js"></script>
+  <script src="js/views/discover.js"></script>
+  <script src="js/views/leads.js"></script>
+  <script src="js/views/leadDetail.js"></script>
+  <script src="js/views/searchIntel.js"></script>
+  <script src="js/views/osint.js"></script>
+  <script src="js/views/pipeline.js"></script>
+  <script src="js/views/analytics.js"></script>
+  <script src="js/views/health.js"></script>
+  <script src="js/views/settings.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

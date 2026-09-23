@@ -1,0 +1,146 @@
+"""
+discovery/contact_discovery.py
+================================
+Contact Discovery: given a company, finds a candidate decision-maker.
+
+Scope: finds a plausible person + designation + LinkedIn/page where they
+were found. Only includes an email if it's plainly visible in the search
+snippet — this module does NOT hunt for, guess, or verify emails.
+That enrichment/verification work belongs to Pillar 2.
+
+Task 12: DESIGNATION_KEYWORDS and DESIGNATION_ACRONYMS are now imported
+from utils.constants (no local duplication).
+"""
+
+import re
+
+from query.query_generator import generate_contact_queries
+from discovery.search_backend import run_search, get_search_manager
+from utils.constants import DESIGNATION_KEYWORDS, DESIGNATION_ACRONYMS
+from utils.validators import is_valid_person_name
+from utils.deadline import Deadline, DeadlineExceeded
+
+EMAIL_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+
+
+def _extract_public_email(text: str):
+    """Only pulls an email if it's plainly sitting in the text already."""
+    if not text:
+        return None
+    match = EMAIL_PATTERN.search(text)
+    return match.group(0) if match else None
+
+
+def _guess_designation(text: str):
+    """Return a formatted designation string if any keyword is found in text."""
+    if not text:
+        return None
+    lowered = text.lower()
+    for kw in DESIGNATION_KEYWORDS:
+        if kw in lowered:
+            return kw.upper() if kw in DESIGNATION_ACRONYMS else kw.title()
+    return None
+
+
+def _extract_name_from_linkedin_title(title: str) -> str:
+    """
+    LinkedIn profile titles are typically  "Name - Designation at Company".
+    Return the part before the first  " - "  separator.
+    """
+    if not title:
+        return ""
+    parts = re.split(r"\s+-\s+|\s+\|\s+|\s*,\s+", title)
+    return parts[0].strip() if parts else ""
+
+
+def discover_contact(company: str, deadline: Deadline | None = None) -> dict:
+    """
+    Returns a single best-guess contact dict for the given company:
+    {contact_name, designation, email, linkedin, source}
+    or an empty dict if nothing plausible was found.
+
+    Task 8: Only returns a contact when both a valid person name and a
+    designation are present. Bare designations without a realistic name
+    are silently skipped.
+    """
+    from utils.deadline import Deadline, DeadlineExceeded
+
+    if deadline:
+        try:
+            deadline.require(1.0)
+        except DeadlineExceeded:
+            print(f"[contact_discovery] Deadline exceeded — skipping contact discovery for '{company}'")
+            return {}
+
+    sm = get_search_manager()
+    if not sm.providers_available():
+        print(f"[contact_discovery] Search providers exhausted — skipping discovery for '{company}'")
+        return {}
+        
+    queries = generate_contact_queries(company)
+    consecutive_zeroes = 0
+
+    for q in queries:
+        if deadline:
+            try:
+                deadline.require(1.0)
+            except DeadlineExceeded:
+                print(f"[contact_discovery] Deadline exceeded during queries for '{company}'")
+                break
+
+        if not sm.providers_available():
+            print(f"[contact_discovery] Search providers exhausted/cooldown during discovery. Stopping.")
+            break
+
+        print(f"[contact_discovery] running query: {q}")
+        raw_results = run_search(q, max_results=5, deadline=deadline)
+        print(f"[contact_discovery]   -> {len(raw_results)} raw results")
+        
+        if not raw_results:
+            consecutive_zeroes += 1
+            if consecutive_zeroes >= 3:
+                print(f"[contact_discovery] 3 consecutive zero results hit. Stopping contact discovery for '{company}'.")
+                break
+        else:
+            consecutive_zeroes = 0
+
+        for r in raw_results:
+            url = r.get("url") or ""
+            title = r.get("title") or ""
+            snippet = r.get("snippet") or ""
+            combined_text = f"{title} {snippet}"
+
+            is_linkedin = "linkedin.com/in" in url
+            designation = _guess_designation(combined_text)
+
+            # A search query is not evidence of employment.  Keep only a
+            # LinkedIn person result that explicitly names both the company
+            # and a designation in the returned title/snippet.
+            if not (is_linkedin and designation and company.lower() in combined_text.lower()):
+                continue
+
+            # Extract and validate the contact name
+            if is_linkedin:
+                contact_name = _extract_name_from_linkedin_title(title)
+            else:
+                contact_name = None
+
+            # Task 8: Skip this result if the name is not a realistic person name
+            if not is_valid_person_name(contact_name or ""):
+                continue
+
+            return {
+                "contact_name": contact_name,
+                "designation": designation,
+                # A LinkedIn snippet is never used as company email evidence.
+                "email": None,
+                "linkedin": url if is_linkedin else None,
+                "source": "LinkedIn" if is_linkedin else "Company Website",
+            }
+
+    return {}
+
+
+if __name__ == "__main__":
+    # quick manual test: python -m discovery.contact_discovery
+    print(discover_contact("ABC AI"))
