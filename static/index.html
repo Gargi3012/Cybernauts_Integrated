@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cybernauts — Lead Intelligence & AI Voice Platform</title>
+  <title>Flowiz — Integrated Platform</title>
   <link rel="icon" type="image/png" href="/static/Flowiz.png">
   
   <!-- Inter & JetBrains Mono Fonts -->
@@ -24,11 +24,13 @@
     <!-- Collapsible Sidebar -->
     <aside class="sidebar" id="appSidebar">
       <div class="sidebar-brand">
-        <div class="brand-icon-box">
-          <i class="fa-solid fa-shield-halved"></i>
-        </div>
+        <img
+          src="/static/Flowiz.png"
+          alt="Flowiz Logo"
+          class="sidebar-flowiz-logo"
+        />
         <div class="sidebar-brand-text">
-          <div class="sidebar-brand-title">CYBERNAUTS</div>
+          <div class="sidebar-brand-title">FLOWIZ</div>
           <div class="sidebar-brand-sub font-mono">INTEGRATED PLATFORM</div>
         </div>
       </div>
@@ -78,7 +80,7 @@
 
       <div class="sidebar-footer">
         <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
-          <span class="font-mono text-muted">v2.0 • SaaS Light</span>
+          <span class="font-mono text-muted">Flowiz v2.0</span>
           <button id="btnToggleSidebar" class="btn btn-secondary btn-sm" style="padding: 4px 8px;" title="Toggle Sidebar">
             <i class="fa-solid fa-bars"></i>
           </button>
@@ -129,7 +131,7 @@
         <div id="viewContainer">
           <div class="loading-state" style="padding: 100px 0; text-align: center;">
             <i class="fa-solid fa-circle-notch fa-spin text-accent" style="font-size: 32px; margin-bottom: 16px;"></i>
-            <div class="text-secondary" style="font-size: 14px;">Loading Cybernauts Workspace...</div>
+            <div class="text-secondary" style="font-size: 14px;">Loading Flowiz Workspace...</div>
           </div>
         </div>
       </main>
@@ -144,10 +146,13 @@
   <div id="auth-overlay" class="auth-overlay hidden">
     <div class="auth-card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-        <h3 style="margin:0;">Admin Authentication</h3>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <img src="/static/Flowiz.png" alt="Flowiz" style="height:28px; width:auto;" />
+          <h3 style="margin:0;">Admin Authentication</h3>
+        </div>
         <button id="btn-close-auth" class="btn btn-secondary btn-sm" style="padding:2px 8px;">✕</button>
       </div>
-      <p class="auth-subtitle">Sign in to unlock AI Voice controls</p>
+      <p class="auth-subtitle">Sign in to unlock Flowiz AI Voice controls</p>
       <div class="auth-input-group">
         <label for="auth-username" style="font-size:12px; font-weight:600; color:var(--text-secondary);">Username</label>
         <input type="text" id="auth-username" class="form-input" placeholder="Enter username" value="admin" style="margin-top:4px;" />

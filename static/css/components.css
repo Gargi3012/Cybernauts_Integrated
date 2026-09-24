@@ -1,5 +1,5 @@
 /**
- * Cybernauts Integrated Platform — Enterprise Component System
+ * Flowiz Integrated Platform — Enterprise Component System
  * Modern B2B SaaS Layout, Tables, Cards, Modals & Voice Controls
  */
 
@@ -40,17 +40,17 @@
   border-bottom: 1px solid var(--border-color);
 }
 
-.brand-icon-box {
-  width: 34px;
+/* Flowiz logo image in sidebar */
+.sidebar-flowiz-logo {
   height: 34px;
-  border-radius: var(--radius-sm);
-  background: var(--accent-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffffff;
-  font-size: 15px;
+  width: auto;
   flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.sidebar.collapsed .sidebar-flowiz-logo {
+  height: 28px;
 }
 
 .sidebar-brand-title {

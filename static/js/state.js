@@ -1,5 +1,5 @@
 /**
- * Cybernauts Integrated Platform — Reactive Application State Manager
+ * Flowiz Integrated Platform — Reactive Application State Manager
  */
 
 class CybernautsState {

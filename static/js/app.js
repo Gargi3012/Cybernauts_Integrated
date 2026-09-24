@@ -1,5 +1,5 @@
 /**
- * Cybernauts Unified SPA Router & App Controller
+ * Flowiz Unified SPA Router & App Controller
  */
 
 class CybernautsApp {

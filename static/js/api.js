@@ -1,5 +1,5 @@
 /**
- * Cybernauts Unified API Client
+ * Flowiz Unified API Client
  * Manages REST API calls for Lead Intelligence and AI Voice Agent
  */
 
