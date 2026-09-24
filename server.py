@@ -92,7 +92,10 @@ if os.path.exists(static_dir):
     @app.get("/frontend")
     @app.get("/frontend/")
     @app.get("/voice/frontend/index.html")
+    @app.get("/voice/frontend")
+    @app.get("/voice/frontend/")
     @app.get("/voice")
+    @app.get("/voice/")
     def redirect_to_unified():
         return RedirectResponse(url="/", status_code=302)
 

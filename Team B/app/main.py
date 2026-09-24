@@ -133,16 +133,16 @@ app = FastAPI(lifespan=lifespan, root_path=os.getenv("ROOT_PATH", ""))
 from fastapi.responses import FileResponse, RedirectResponse
 
 @app.get("/")
-def root_redirect():
-    return RedirectResponse(url="/frontend/index.html")
-
 @app.get("/voice/frontend/index.html")
 @app.get("/voice/frontend/")
 @app.get("/voice/frontend")
 @app.get("/voice")
 @app.get("/voice/")
-def serve_voice_frontend():
-    return FileResponse("frontend/index.html")
+@app.get("/frontend")
+@app.get("/frontend/")
+@app.get("/frontend/index.html")
+def root_redirect():
+    return RedirectResponse(url="/", status_code=302)
 
 @app.get("/health")
 def health_check():
@@ -815,11 +815,7 @@ async def run_voice_session(
         # Print turn-by-turn benchmark summary
         latency_tracker.print_summary()
 
-from fastapi.staticfiles import StaticFiles
-frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
-if os.path.exists(frontend_dir):
-    app.mount("/frontend", StaticFiles(directory=frontend_dir), name="frontend")
-    app.mount("/voice/frontend", StaticFiles(directory=frontend_dir), name="voice_frontend")
+# Legacy Team B standalone frontend mounts removed. The single production frontend is served from root /static/index.html
 
 
 def main() -> None:

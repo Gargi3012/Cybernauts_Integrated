@@ -86,6 +86,10 @@ const api = {
       method: "POST",
       body: { phoneNumber }
     });
+  },
+
+  async getCallHistory() {
+    return fetchJSON("/api/call-history");
   }
 };
 

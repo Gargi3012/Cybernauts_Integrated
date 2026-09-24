@@ -80,9 +80,44 @@ class CybernautsApp {
     const btnCloseAuth = document.getElementById('btn-close-auth');
     const btnLoginSubmit = document.getElementById('btn-login-submit');
 
-    if (btnHeaderAction && authOverlay) {
+    const updateAuthUI = () => {
+      const token = localStorage.getItem("jwt_token");
+      const btnText = document.getElementById('btnHeaderActionText');
+      const btnIcon = btnHeaderAction ? btnHeaderAction.querySelector('i') : null;
+
+      if (token) {
+        if (btnText) btnText.innerText = "Admin Authenticated";
+        if (btnIcon) btnIcon.className = "fa-solid fa-user-check text-accent";
+        if (btnHeaderAction) {
+          btnHeaderAction.classList.remove('btn-primary');
+          btnHeaderAction.classList.add('btn-secondary');
+          btnHeaderAction.title = "Click to Log Out";
+        }
+      } else {
+        if (btnText) btnText.innerText = "Admin Auth";
+        if (btnIcon) btnIcon.className = "fa-solid fa-user-lock";
+        if (btnHeaderAction) {
+          btnHeaderAction.classList.remove('btn-secondary');
+          btnHeaderAction.classList.add('btn-primary');
+          btnHeaderAction.title = "Click to Sign In";
+        }
+      }
+    };
+
+    if (btnHeaderAction) {
       btnHeaderAction.addEventListener('click', () => {
-        authOverlay.classList.remove('hidden');
+        const token = localStorage.getItem("jwt_token");
+        if (token) {
+          if (confirm("Log out of Admin Voice session?")) {
+            localStorage.removeItem("jwt_token");
+            updateAuthUI();
+            if (window.store.currentView === 'liveAgent' && this.views.liveAgent) {
+              this.views.liveAgent.render(document.getElementById('viewContainer'));
+            }
+          }
+        } else if (authOverlay) {
+          authOverlay.classList.remove('hidden');
+        }
       });
     }
 
@@ -92,6 +127,20 @@ class CybernautsApp {
       });
     }
 
+    if (authOverlay) {
+      authOverlay.addEventListener('click', (e) => {
+        if (e.target === authOverlay) {
+          authOverlay.classList.add('hidden');
+        }
+      });
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && authOverlay && !authOverlay.classList.contains('hidden')) {
+        authOverlay.classList.add('hidden');
+      }
+    });
+
     if (btnLoginSubmit && authOverlay) {
       btnLoginSubmit.addEventListener('click', async () => {
         const usernameInput = document.getElementById('auth-username');
@@ -99,25 +148,35 @@ class CybernautsApp {
         const username = usernameInput ? usernameInput.value : '';
         const password = passwordInput ? passwordInput.value : '';
 
+        if (!username || !password) {
+          alert("Please enter both username and password.");
+          return;
+        }
+
         try {
+          btnLoginSubmit.disabled = true;
+          btnLoginSubmit.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Signing In...</span>';
+
           const res = await window.api.login(username, password);
           if (res.token) {
             authOverlay.classList.add('hidden');
-            const btnText = document.getElementById('btnHeaderActionText');
-            if (btnText) btnText.innerText = "Admin Authenticated";
-            alert("Login Successful! Admin voice controls unlocked.");
+            updateAuthUI();
+            if (passwordInput) passwordInput.value = '';
+            if (window.store.currentView === 'liveAgent' && this.views.liveAgent) {
+              this.views.liveAgent.render(document.getElementById('viewContainer'));
+            }
           }
         } catch (err) {
           alert("Login Failed: " + (err.message || err));
+        } finally {
+          btnLoginSubmit.disabled = false;
+          btnLoginSubmit.innerHTML = '<span>Sign In</span>';
         }
       });
     }
 
-    // Check if token already exists
-    if (localStorage.getItem("jwt_token")) {
-      const btnText = document.getElementById('btnHeaderActionText');
-      if (btnText) btnText.innerText = "Admin Authenticated";
-    }
+    // Initialize Auth UI state on page load
+    updateAuthUI();
   }
 
   async loadInitialData() {

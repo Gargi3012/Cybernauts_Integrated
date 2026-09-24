@@ -207,7 +207,7 @@ def _build_real_pipeline_task(
         
         agg_params = LLMUserAggregatorParams(
             user_turn_strategies=UserTurnStrategies(
-                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]
+                stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.7)]
             )
         )
         user_agg = LLMUserAggregator(context, params=agg_params)
@@ -282,6 +282,7 @@ def _build_real_pipeline_task(
             self._first_llm_token_logged = False
             self._first_tts_chunk_logged = False
             self._stt_started_logged = False
+            self._first_user_audio_logged = False
 
         async def on_push_frame(self, data: FramePushed):
             frame = data.frame
@@ -290,85 +291,98 @@ def _build_real_pipeline_task(
             from pipecat.frames.frames import (
                 TranscriptionFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TextFrame,
                 TTSStartedFrame, TTSStoppedFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
-                StartFrame, EndFrame, AudioRawFrame
+                StartFrame, EndFrame, AudioRawFrame, UserAudioRawFrame, LLMContextFrame, LLMRunFrame
             )
             
-            if isinstance(frame, StartFrame) and source_class in ("DeepgramSTTService", "GroqSTTService", "OpenAISTTService", "ResilientSTTProcessor") and not self._stt_started_logged:
-                logger.info(f"[OBSERVABILITY] STT start | session_id={bridge._session_id} | component={source_class} | ts={now}")
-                self._stt_started_logged = True
+            frame_type = type(frame).__name__
             
-            # Accumulate LLM response text ONLY from the LLM processor or universal aggregators (strictly ignore STT and TTS TextFrames)
-            if isinstance(frame, TextFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "ResilientLLMProcessor", "LLMUserAggregator", "LLMAssistantAggregator"):
-                frame_id = id(frame)
-                if frame_id not in self._seen_text_frame_ids:
-                    self._seen_text_frame_ids.add(frame_id)
-                    if not self._first_llm_token_logged:
-                        logger.info(f"[OBSERVABILITY] First LLM token | session_id={bridge._session_id} | ts={now}")
-                        self._first_llm_token_logged = True
-                    self._current_llm_response += frame.text
+            if isinstance(frame, StartFrame) and source_class in ("DeepgramSTTService", "GroqSTTService", "OpenAISTTService", "ResilientSTTProcessor") and not self._stt_started_logged:
+                logger.info(f"[VOICE] STT started | session_id={bridge._session_id} | component={source_class}")
+                self._stt_started_logged = True
+
+            if isinstance(frame, UserAudioRawFrame) and not self._first_user_audio_logged:
+                logger.info(f"[VOICE] user audio received | session_id={bridge._session_id}")
+                self._first_user_audio_logged = True
             
             if isinstance(frame, UserStartedSpeakingFrame):
+                logger.info(f"[VOICE] USER_SPEECH_STARTED | source={source_class} | session_id={bridge._session_id}")
                 if latency_tracker:
                     latency_tracker.on_vad_start()
-                bridge.on_user_interrupted()
-                # Reset trackers for new turn
+                
+                # Only trigger barge-in interruption if the bot is actually speaking
+                current_state_val = getattr(bridge._fsm, "get_current_state", lambda: None)()
+                state_str = current_state_val.name if hasattr(current_state_val, "name") else str(current_state_val)
+                if state_str.upper() == "SPEAKING":
+                    logger.info(f"[VOICE] User barged in while bot was speaking. Triggering interruption.")
+                    bridge.on_user_interrupted()
+                
+                self._first_user_audio_logged = False
                 self._first_partial_logged = False
                 self._first_llm_token_logged = False
                 self._first_tts_chunk_logged = False
-                self._current_llm_response = ""
-                self._seen_text_frame_ids.clear()
                 self._llm_response_emitted_for_turn = False
                 
             elif isinstance(frame, UserStoppedSpeakingFrame):
+                logger.info(f"[VOICE] USER_SPEECH_STOPPED | source={source_class} | session_id={bridge._session_id}")
                 if latency_tracker:
                     latency_tracker.on_vad_stop()
-                logger.info(f"[OBSERVABILITY] Final transcript (VAD Stop) | session_id={bridge._session_id} | ts={now}")
                 
-            # Emit STT transcript only when pushed directly from STT processor
-            elif isinstance(frame, TranscriptionFrame) and frame.text and source_class in ("DeepgramSTTService", "GroqSTTService", "OpenAISTTService", "ResilientSTTProcessor", "MockPipecatProcessor"):
-                if not self._first_partial_logged:
-                    logger.info(f"[OBSERVABILITY] First partial transcript | session_id={bridge._session_id} | ts={now}")
-                    self._first_partial_logged = True
-                
-                if latency_tracker:
-                    latency_tracker.on_stt_transcript()
+            elif isinstance(frame, TranscriptionFrame) and frame.text and not getattr(frame, 'user_id', None) == "bot":
                 import re
                 clean_text = re.sub(r'\s*\[System:.*?\]', '', frame.text, flags=re.DOTALL).strip()
-                bridge.on_transcript_ready(clean_text)
+                if source_class in ("DeepgramSTTService", "GroqSTTService", "OpenAISTTService", "ResilientSTTProcessor", "MockPipecatProcessor"):
+                    logger.info(f"[VOICE] STT transcript: {clean_text}")
+                    if not self._first_partial_logged:
+                        self._first_partial_logged = True
+                    if latency_tracker:
+                        latency_tracker.on_stt_transcript()
+                    bridge.on_transcript_ready(clean_text)
 
-            elif isinstance(frame, LLMFullResponseStartFrame):
+            elif isinstance(frame, (LLMContextFrame, LLMRunFrame)) and source_class == "LLMUserAggregator":
+                logger.info(f"[VOICE] LLM input received | session_id={bridge._session_id}")
+
+            elif isinstance(frame, LLMFullResponseStartFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "ResilientLLMProcessor"):
+                logger.info(f"[VOICE] LLM response started | source={source_class} | session_id={bridge._session_id}")
+                self._current_llm_response = ""
+                self._first_llm_token_logged = False
                 if latency_tracker:
                     latency_tracker.on_llm_first_token()
                 bridge.on_llm_response_started()
                 self._llm_response_emitted_for_turn = False
-                    
-            elif isinstance(frame, LLMFullResponseEndFrame):
+
+            elif isinstance(frame, TextFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "ResilientLLMProcessor"):
+                if not self._first_llm_token_logged:
+                    logger.info(f"[VOICE] First LLM token: '{frame.text}' | session_id={bridge._session_id}")
+                    self._first_llm_token_logged = True
+                self._current_llm_response += frame.text
+
+            elif isinstance(frame, LLMFullResponseEndFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "ResilientLLMProcessor"):
+                full_resp = self._current_llm_response.strip()
+                logger.info(f"[VOICE] LLM response received: {full_resp}")
                 if latency_tracker:
                     latency_tracker.on_llm_complete()
-                logger.info(f"[OBSERVABILITY] LLM completion | session_id={bridge._session_id} | ts={now}")
-                if not self._llm_response_emitted_for_turn and self._current_llm_response.strip():
-                    bridge.on_llm_response_ready(self._current_llm_response.strip())
+                if not self._llm_response_emitted_for_turn and full_resp:
+                    bridge.on_llm_response_ready(full_resp)
                     self._llm_response_emitted_for_turn = True
                 
-            elif isinstance(frame, TTSStartedFrame):
+            elif isinstance(frame, TTSStartedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
+                logger.info(f"[VOICE] TTS input received / TTS audio started | source={source_class} | session_id={bridge._session_id}")
                 if latency_tracker:
                     latency_tracker.on_tts_start()
-                if not self._first_tts_chunk_logged:
-                    logger.info(f"[OBSERVABILITY] First TTS chunk synthesized | session_id={bridge._session_id} | ts={now}")
-                    self._first_tts_chunk_logged = True
                 bridge.on_audio_started()
                 
-            elif isinstance(frame, AudioRawFrame) and source_class in ("CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService") and not getattr(self, "_first_audio_packet_sent", False):
-                logger.info(f"[OBSERVABILITY] First audio packet sent (Transport bound) | session_id={bridge._session_id} | ts={now}")
-                self._first_audio_packet_sent = True
+            elif isinstance(frame, AudioRawFrame) and source_class in ("CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "SarvamTTSService"):
+                if not getattr(self, "_first_audio_packet_sent", False):
+                    logger.info(f"[VOICE] TTS audio generated / audio published | source={source_class} | session_id={bridge._session_id}")
+                    self._first_audio_packet_sent = True
                 
-            elif isinstance(frame, TTSStoppedFrame):
-                logger.info(f"[OBSERVABILITY] Audio streaming completion | session_id={bridge._session_id} | ts={now}")
+            elif isinstance(frame, TTSStoppedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
+                logger.info(f"[VOICE] TTS audio playback completed | source={source_class} | session_id={bridge._session_id}")
                 bridge.on_audio_finished()
                 self._first_audio_packet_sent = False
                 
-            elif isinstance(frame, EndFrame):
-                logger.info(f"[OBSERVABILITY] Pipeline shutdown initiated | session_id={bridge._session_id} | ts={now}")
+            elif isinstance(frame, EndFrame) and source_class in ("Pipeline", "PipelineSource", "PipelineTask"):
+                logger.info(f"[VOICE] Pipeline shutdown initiated | session_id={bridge._session_id}")
 
     task = PipelineTask(
         real_pipeline, 

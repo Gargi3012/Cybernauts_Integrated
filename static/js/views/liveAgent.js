@@ -452,7 +452,7 @@ class LiveAgentView {
           const element = track.attach();
           element.id = `remote-audio-${participant.identity}`;
           document.body.appendChild(element);
-          console.log("[17] Browser receives audio element attached:", element);
+          console.log("[VOICE] frontend audio received | element attached:", element);
           
           if (element.play) {
             element.play()
@@ -496,8 +496,9 @@ class LiveAgentView {
 
       // Step 6 & 7: Enable Local Microphone Track
       console.log("[6] MIC TRACK CREATING...");
-      await this.room.localParticipant.enableCameraAndMicrophone();
+      await this.room.localParticipant.setMicrophoneEnabled(true);
       console.log("[7] MIC TRACK CREATED & PUBLISHED TO LIVEKIT!");
+      console.log("[VOICE] microphone track published");
 
       // Log full room state
       this.logRoomState();
