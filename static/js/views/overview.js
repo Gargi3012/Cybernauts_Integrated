@@ -11,7 +11,7 @@ class OverviewView {
     container.innerHTML = `
       <div style="margin-bottom: 28px;">
         <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 6px 0;">System Overview</h1>
-        <div style="color: var(--flowiz-text-muted); font-size: 13px;">
+        <div style="color: var(--text-muted); font-size: 13px;">
           Unified analytics across Lead Intelligence mining and AI Voice Agent operations.
         </div>
       </div>
@@ -19,33 +19,33 @@ class OverviewView {
       <!-- Top Summary Cards -->
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 28px;">
         <div class="card" style="padding: 20px;">
-          <div style="font-size: 12px; font-weight: 700; color: var(--flowiz-text-muted); text-transform: uppercase;">Total Discovered Leads</div>
-          <div style="font-size: 28px; font-weight: 800; color: var(--flowiz-text-primary); margin: 8px 0;">${totalLeads}</div>
-          <div style="font-size: 12px; color: var(--flowiz-success); font-weight: 600;">
+          <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Total Discovered Leads</div>
+          <div style="font-size: 28px; font-weight: 800; color: var(--text-primary); margin: 8px 0;">${totalLeads}</div>
+          <div style="font-size: 12px; color: var(--color-success-text); font-weight: 600;">
             <i class="fa-solid fa-arrow-trend-up"></i> Verified SQLite storage
           </div>
         </div>
 
         <div class="card" style="padding: 20px;">
-          <div style="font-size: 12px; font-weight: 700; color: var(--flowiz-text-muted); text-transform: uppercase;">Verified Email Addresses</div>
-          <div style="font-size: 28px; font-weight: 800; color: var(--flowiz-text-primary); margin: 8px 0;">${leadsWithEmail}</div>
-          <div style="font-size: 12px; color: var(--flowiz-info); font-weight: 600;">
+          <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Verified Email Addresses</div>
+          <div style="font-size: 28px; font-weight: 800; color: var(--text-primary); margin: 8px 0;">${leadsWithEmail}</div>
+          <div style="font-size: 12px; color: var(--color-info-text); font-weight: 600;">
             ${totalLeads > 0 ? Math.round((leadsWithEmail / totalLeads) * 100) : 0}% Data Completeness
           </div>
         </div>
 
         <div class="card" style="padding: 20px;">
-          <div style="font-size: 12px; font-weight: 700; color: var(--flowiz-text-muted); text-transform: uppercase;">Verified Phone Numbers</div>
-          <div style="font-size: 28px; font-weight: 800; color: var(--flowiz-text-primary); margin: 8px 0;">${leadsWithPhone}</div>
-          <div style="font-size: 12px; color: var(--flowiz-success); font-weight: 600;">
+          <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Verified Phone Numbers</div>
+          <div style="font-size: 28px; font-weight: 800; color: var(--text-primary); margin: 8px 0;">${leadsWithPhone}</div>
+          <div style="font-size: 12px; color: var(--color-success-text); font-weight: 600;">
             Ready for Native Device Dialing
           </div>
         </div>
 
         <div class="card" style="padding: 20px;">
-          <div style="font-size: 12px; font-weight: 700; color: var(--flowiz-text-muted); text-transform: uppercase;">AI Voice Pipeline</div>
-          <div style="font-size: 28px; font-weight: 800; color: var(--flowiz-text-primary); margin: 8px 0;">Ready</div>
-          <div style="font-size: 12px; color: var(--flowiz-success); font-weight: 600;">
+          <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">AI Voice Pipeline</div>
+          <div style="font-size: 28px; font-weight: 800; color: var(--text-primary); margin: 8px 0;">Ready</div>
+          <div style="font-size: 12px; color: var(--color-success-text); font-weight: 600;">
             LiveKit Cloud & Twilio Online
           </div>
         </div>
