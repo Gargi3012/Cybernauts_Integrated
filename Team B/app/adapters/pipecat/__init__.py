@@ -20,7 +20,7 @@ from .transport import (
     MockWebRTCTransport,
     MockWebSocketTransport,
     PipecatTransportAdapter,
-    TwilioTransportAdapter,
+    PlivoTransportAdapter,
 )
 from .utils import extract_pipecat_metadata
 
@@ -33,7 +33,7 @@ __all__ = [
     "PipecatProcessorAdapter",
     "PipecatTransportAdapter",
     "LiveKitTransportAdapter",
-    "TwilioTransportAdapter",
+    "PlivoTransportAdapter",
     "MockWebSocketTransport",
     "MockWebRTCTransport",
     "extract_pipecat_metadata",

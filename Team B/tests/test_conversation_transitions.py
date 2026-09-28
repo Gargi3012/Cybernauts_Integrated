@@ -23,7 +23,7 @@ from app.conversation import (
 
 class TestConversationState:
     def test_member_count(self) -> None:
-        assert len(ConversationState) == 10
+        assert len(ConversationState) == 12
 
     @pytest.mark.parametrize("name,value", [
         ("IDLE", "idle"), ("LISTENING", "listening"),
@@ -31,6 +31,7 @@ class TestConversationState:
         ("GENERATING_RESPONSE", "generating_response"),
         ("GENERATING_AUDIO", "generating_audio"),
         ("SPEAKING", "speaking"), ("INTERRUPTED", "interrupted"),
+        ("ENDING_CALL", "ending_call"), ("PHONE_CAPTURE", "phone_capture"),
         ("ERROR", "error"), ("CLOSED", "closed"),
     ])
     def test_values(self, name: str, value: str) -> None:
@@ -48,12 +49,14 @@ class TestConversationState:
         ConversationState.LISTENING, ConversationState.TRANSCRIBING,
         ConversationState.THINKING, ConversationState.GENERATING_RESPONSE,
         ConversationState.GENERATING_AUDIO, ConversationState.SPEAKING,
+        ConversationState.PHONE_CAPTURE,
     ])
     def test_is_processing_true(self, state: ConversationState) -> None:
         assert state.is_processing() is True
 
     @pytest.mark.parametrize("state", [
         ConversationState.IDLE, ConversationState.INTERRUPTED,
+        ConversationState.ENDING_CALL,
         ConversationState.ERROR, ConversationState.CLOSED,
     ])
     def test_is_processing_false(self, state: ConversationState) -> None:

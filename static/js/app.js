@@ -1,5 +1,6 @@
 /**
  * Flowiz Unified SPA Router & App Controller
+ * Orchestrates views, state subscriptions, routing, and live event syncing
  */
 
 class CybernautsApp {
@@ -21,6 +22,7 @@ class CybernautsApp {
     this.setupNavigation();
     this.setupGlobalEvents();
     this.setupAuthHandlers();
+    this.setupStateSubscriptions();
     this.loadInitialData();
     
     // Hash Routing
@@ -74,6 +76,43 @@ class CybernautsApp {
     }
   }
 
+  setupStateSubscriptions() {
+    // Keep sidebar lead count synchronized
+    window.store.subscribe('leadsUpdated', (leads) => {
+      const countBadge = document.getElementById('sidebarLeadCount');
+      if (countBadge) {
+        countBadge.innerText = (leads && Array.isArray(leads)) ? leads.length : 0;
+      }
+
+      // Re-render active view if relevant
+      const current = window.store.currentView;
+      const container = document.getElementById('viewContainer');
+      if (container && (current === 'overview' || current === 'pipeline')) {
+        this.views[current].render(container);
+      }
+    });
+
+    // Update topbar status pill if an active call starts
+    window.store.subscribe('activeCallChanged', (activeCall) => {
+      const topbarPill = document.getElementById('topbarStatusPill');
+      if (topbarPill) {
+        if (activeCall && activeCall.call_status !== 'completed') {
+          topbarPill.innerHTML = `
+            <span class="status-indicator" style="background: #eab308;"></span>
+            <span>Call in Progress: ${activeCall.company_name || 'Prospect'}</span>
+          `;
+          topbarPill.className = 'status-pill status-warning';
+        } else {
+          topbarPill.innerHTML = `
+            <span class="status-indicator"></span>
+            <span>All Systems Operational</span>
+          `;
+          topbarPill.className = 'status-pill';
+        }
+      }
+    });
+  }
+
   setupAuthHandlers() {
     const btnHeaderAction = document.getElementById('btnHeaderAction');
     const authOverlay = document.getElementById('auth-overlay');
@@ -108,7 +147,7 @@ class CybernautsApp {
       btnHeaderAction.addEventListener('click', () => {
         const token = localStorage.getItem("jwt_token");
         if (token) {
-          if (confirm("Log out of Admin Voice session?")) {
+          if (confirm("Log out of Admin session?")) {
             localStorage.removeItem("jwt_token");
             updateAuthUI();
             if (window.store.currentView === 'liveAgent' && this.views.liveAgent) {
@@ -218,14 +257,14 @@ class CybernautsApp {
     const breadcrumb = document.getElementById('currentBreadcrumb');
     if (breadcrumb) {
       const titleMap = {
-        overview: 'Overview',
+        overview: 'System Overview',
         discover: 'Discover Leads',
-        leads: 'All Leads',
-        pipeline: 'Pipeline Monitor',
+        leads: 'All Leads Directory',
+        pipeline: 'Qualification Pipeline',
         analytics: 'Analytics',
         liveAgent: 'Live AI Voice Agent',
-        callHistory: 'Voice Call History',
-        settings: 'Settings'
+        callHistory: 'Call History & Transcripts',
+        settings: 'Diagnostics & Settings'
       };
       breadcrumb.innerText = titleMap[targetView] || targetView;
     }
@@ -238,7 +277,6 @@ class CybernautsApp {
   }
 }
 
-// Global View Classes Registration (Placeholders that render clean UI)
 document.addEventListener('DOMContentLoaded', () => {
   window.app = new CybernautsApp();
   window.app.init();

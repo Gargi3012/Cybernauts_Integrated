@@ -8,15 +8,16 @@ async def test_websocket():
         async with websockets.connect(uri) as websocket:
             print("Connected to WebSocket")
             
-            # Send the start event exactly like Twilio does
+            # Send the start event exactly like Plivo does
             start_event = {
                 "event": "start",
                 "start": {
-                    "streamSid": "MZ1234567890abcdef",
+                    "streamId": "plivo-stream-12345",
+                    "callId": "plivo-call-12345",
                     "customParameters": {
                         "phone": "+1234567890",
-                        "client_id": "",
-                        "webhook_processing_start": "123.45"
+                        "lead_id": "test.com",
+                        "session_id": "sess-test-123"
                     }
                 }
             }

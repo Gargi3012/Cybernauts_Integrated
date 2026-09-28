@@ -1,12 +1,17 @@
 import os
-from twilio.rest import Client
+import plivo
 from dotenv import load_dotenv
 
 load_dotenv()
-client = Client(os.environ['TWILIO_ACCOUNT_SID'], os.environ['TWILIO_AUTH_TOKEN'])
+auth_id = os.environ.get('PLIVO_AUTH_ID', '')
+auth_token = os.environ.get('PLIVO_AUTH_TOKEN', '')
 
-notifications = client.notifications.list(limit=5)
-print("RECENT ACCOUNT NOTIFICATIONS:")
-for n in notifications:
-    print(f"[{n.message_date}] Call SID: {n.call_sid} | Error: {n.error_code} | Msg: {n.message_text}")
-    print(f"URL: {n.request_url}")
+if auth_id and auth_token and not auth_id.startswith('dummy_'):
+    client = plivo.RestClient(auth_id, auth_token)
+    try:
+        calls = client.calls.list(limit=5)
+        print("RECENT PLIVO CALLS:", calls)
+    except Exception as e:
+        print(f"Failed to fetch calls: {e}")
+else:
+    print("Set PLIVO_AUTH_ID and PLIVO_AUTH_TOKEN in .env.")

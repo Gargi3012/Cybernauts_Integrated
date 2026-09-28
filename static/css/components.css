@@ -42,15 +42,23 @@
 
 /* Flowiz logo image in sidebar */
 .sidebar-flowiz-logo {
-  height: 34px;
-  width: auto;
+  height: 36px;
+  width: 36px;
   flex-shrink: 0;
   object-fit: contain;
-  border-radius: 6px;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(236, 72, 153, 0.2);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.sidebar-flowiz-logo:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(236, 72, 153, 0.35);
 }
 
 .sidebar.collapsed .sidebar-flowiz-logo {
-  height: 28px;
+  height: 32px;
+  width: 32px;
 }
 
 .sidebar-brand-title {
@@ -535,4 +543,90 @@
     transform: scale(1) translateY(0);
   }
 }
+
+/* Interactive Pipeline & Table Hovers */
+.pipeline-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.lead-table-row:hover td {
+  background: var(--bg-surface-secondary);
+}
+
+.overview-lead-item:hover {
+  border-color: var(--color-primary) !important;
+  background: #ffffff !important;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ==========================================================================
+   Flowiz Custom Pink Pointer / Cursor Follower (Pure GPU Transform & Lerp)
+   ========================================================================== */
+
+.flowiz-cursor-follower {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none !important;
+  user-select: none;
+  z-index: 999999;
+  opacity: 0;
+  will-change: transform, opacity;
+  transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.flowiz-cursor-follower.is-visible {
+  opacity: 1;
+}
+
+.flowiz-cursor-dot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--flowiz-pink-gradient, linear-gradient(135deg, #f43f5e, #ec4899));
+  box-shadow: 0 0 8px var(--flowiz-pink-glow, rgba(236, 72, 153, 0.6)),
+              0 0 2px rgba(255, 255, 255, 0.85);
+  transform: translate(-50%, -50%) scale(1);
+  will-change: transform, box-shadow, opacity;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.2s ease;
+}
+
+/* Interactive hover state — subtle expansion and soft outer ring glow */
+.flowiz-cursor-follower.is-interactive .flowiz-cursor-dot {
+  transform: translate(-50%, -50%) scale(1.65);
+  box-shadow: 0 0 14px var(--flowiz-pink-glow-lg, rgba(236, 72, 153, 0.85)),
+              0 0 4px rgba(255, 255, 255, 0.95),
+              0 0 0 2px rgba(236, 72, 153, 0.25);
+}
+
+/* Text input / editable hover state — softer and discreet */
+.flowiz-cursor-follower.is-text .flowiz-cursor-dot {
+  transform: translate(-50%, -50%) scale(0.7);
+  opacity: 0.45;
+  box-shadow: 0 0 4px var(--flowiz-pink-glow, rgba(236, 72, 153, 0.4));
+}
+
+/* Touch and mobile devices — completely hidden */
+@media (pointer: coarse), (hover: none) {
+  .flowiz-cursor-follower {
+    display: none !important;
+  }
+}
+
+/* Respect user's reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .flowiz-cursor-dot {
+    transition: none !important;
+  }
+}
+
 

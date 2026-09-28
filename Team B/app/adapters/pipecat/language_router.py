@@ -27,8 +27,14 @@ class LanguageRoutingProcessor(FrameProcessor):
             text = frame.text.lower()
             
             # --- Fix Deepgram Time Formatting Bug ---
-            # Deepgram smart_format sometimes converts spoken numbers like '708' into times like '07:08'.
-            frame.text = re.sub(r'\b0?(\d{1,2}):(\d{2})\b', r'\1\2', frame.text)
+            # Deepgram smart_format sometimes converts spoken numbers like '708' into
+            # timestamps like '07:08' or '7:08'. This is especially disruptive during
+            # digit-by-digit phone number entry. Convert ALL time patterns back to digits.
+            # E.g. '7:08' -> '708', '07:08' -> '0708', '1:23:45' -> '12345'
+            def _collapse_time(m: re.Match) -> str:
+                return m.group(0).replace(':', '')
+            
+            frame.text = re.sub(r'\b\d{1,2}(?::\d{2}){1,2}\b', _collapse_time, frame.text)
             text = frame.text.lower()
             
             # --- Language Detection ---
@@ -53,9 +59,14 @@ class LanguageRoutingProcessor(FrameProcessor):
 
 class CallTerminationProcessor(FrameProcessor):
     """
-    Monitors the user's speech. If the user says a closing phrase (e.g. bye, thank you),
-    it flags the call for termination.
-    When the LLM finishes its response (saying goodbye back), it gracefully pushes an EndFrame.
+    Monitors TTS completion and triggers pipeline shutdown after the AI's
+    final goodbye response finishes playing.
+
+    Works in tandem with SemanticEndCallDetector:
+      - SemanticEndCallDetector sets shared_state["hangup_requested"] = True
+        when the user says a genuine goodbye phrase.
+      - This processor waits for TTSStoppedFrame + LLM response completed
+        before sending CancelFrame to the pipeline task.
     """
     def __init__(self, shared_state=None, **kwargs):
         super().__init__(**kwargs)
@@ -71,7 +82,9 @@ class CallTerminationProcessor(FrameProcessor):
         
         # Reset completed flag when a new user turn starts (user starts speaking/transcribing)
         if isinstance(frame, TranscriptionFrame) and not getattr(frame, 'user_id', None) == "bot":
-            self.llm_response_completed = False
+            # Only reset if NOT in ending_call mode
+            if not self.shared_state.get("ending_call"):
+                self.llm_response_completed = False
             
         # Set completed flag when LLM finishes generating response text
         if isinstance(frame, LLMFullResponseEndFrame):
@@ -90,11 +103,12 @@ class CallTerminationProcessor(FrameProcessor):
                 return
             logger.info(f"CallTerminationProcessor saw TTSStoppedFrame. state: {self.shared_state} | llm_completed={self.llm_response_completed}")
             if self.shared_state.get("hangup_requested") and self.llm_response_completed:
-                logger.warning("CallTerminationProcessor: Bot finished responding to goodbye. Terminating the call via master Task.")
+                logger.warning("[EOC] CALL_CLOSING_COMPLETED | Bot finished goodbye TTS. Terminating call via master Task.")
                 task = self.shared_state.get("task")
                 if task:
                     await task.queue_frames([CancelFrame()])
                 else:
                     await self.push_frame(EndTaskFrame(), direction)
                 self.shared_state["hangup_requested"] = False
+                self.shared_state["ending_call"] = False
                 self.llm_response_completed = False

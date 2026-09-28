@@ -68,9 +68,11 @@ SARVAM_TTS_MODEL: str = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
 BOT_NAME: str = os.getenv("BOT_NAME", "Cybernauts Agent")
 
 # ── Transport (Telephony/WebRTC transport) ────────────────────────────────
-TRANSPORT_MODE: str = os.getenv("TRANSPORT_MODE", "livekit") # "twilio", or "livekit"
-TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
+TRANSPORT_MODE: str = os.getenv("TRANSPORT_MODE", "plivo") # "plivo" | "livekit"
+PLIVO_AUTH_ID: str = os.getenv("PLIVO_AUTH_ID", "")
+PLIVO_AUTH_TOKEN: str = os.getenv("PLIVO_AUTH_TOKEN", "")
+PLIVO_PHONE_NUMBER: str = os.getenv("PLIVO_PHONE_NUMBER", os.getenv("PLIVO_FROM_NUMBER", ""))
+PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "")
 
 # ── Database (Neon PostgreSQL) ──────────────────────────────────────────
 DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/voice_db")

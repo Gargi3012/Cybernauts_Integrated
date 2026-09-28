@@ -152,16 +152,27 @@ async def join_livekit_room(request: dict = None):
         raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
 
 
-@router.post("/api/twilio/outbound", dependencies=[Depends(verify_jwt)])
+@router.post("/api/plivo/outbound", dependencies=[Depends(verify_jwt)])
+@router.post("/api/telephony/outbound", dependencies=[Depends(verify_jwt)])
 async def trigger_outbound_call(payload: dict):
-    phone_number = payload.get("phoneNumber")
+    phone_number = payload.get("phoneNumber") or payload.get("phone_number")
     if not phone_number:
         raise HTTPException(status_code=400, detail="phoneNumber is required")
         
+    company_context = payload.get("company_context")
+    import json
+    company_context_str = json.dumps(company_context) if isinstance(company_context, dict) else (company_context or None)
+    lead_id = payload.get("lead_id")
+
     try:
         from Pillar_2.outbound_call import place_outbound_call
-        call_sid = await asyncio.to_thread(place_outbound_call, phone_number)
-        return {"status": "success", "callSid": call_sid}
+        call_id = await asyncio.to_thread(
+            place_outbound_call,
+            phone_number,
+            company_context=company_context_str,
+            lead_id=lead_id
+        )
+        return {"status": "success", "callSid": call_id, "call_id": call_id, "provider": "plivo"}
     except Exception as e:
         logger.exception(f"Failed to place outbound call: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -191,40 +202,17 @@ async def get_call_history():
                     "id": str(s.id),
                     "sessionId": s.session_id,
                     "phone": phone,
-                    "transport": "Twilio Telephony" if ("twilio" in s.session_id.lower() or phone.startswith("+")) else "LiveKit WebRTC",
+                    "transport": "Plivo Telephony" if ("plivo" in s.session_id.lower() or phone.startswith("+")) else "LiveKit WebRTC",
                     "duration": duration_str,
                     "status": s.status or "COMPLETED",
                     "summary": summary,
                     "startedAt": s.started_at.isoformat() if s.started_at else None
                 })
-            if history:
-                return {"calls": history}
+            return {"calls": history}
     except Exception as e:
         logger.warning(f"Failed to fetch call history from DB: {e}")
 
-    # Fallback default items if DB returns empty
-    return {"calls": [
-        {
-            "id": "1",
-            "sessionId": "mock-1",
-            "phone": "+1 (737) 221-2163",
-            "transport": "Twilio Telephony",
-            "duration": "1m 42s",
-            "status": "COMPLETED",
-            "summary": "Caller inquired about AI capabilities and requested an executive follow-up call.",
-            "startedAt": datetime.now().isoformat()
-        },
-        {
-            "id": "2",
-            "sessionId": "mock-2",
-            "phone": "+91 98765 43210",
-            "transport": "LiveKit WebRTC",
-            "duration": "3m 15s",
-            "status": "COMPLETED",
-            "summary": "Tested Sarvam Shreya voice pipeline in Hinglish. Captured name and project details.",
-            "startedAt": datetime.now().isoformat()
-        }
-    ]}
+    return {"calls": []}
 
 
 @router.websocket("/ws/frontend")

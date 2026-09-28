@@ -69,17 +69,21 @@ class SessionManager:
     #  SESSION LIFECYCLE
     # ==================================================================
 
-    async def create_session(self, metadata: Optional[Dict[str, str]] = None) -> Session:
+    async def create_session(self, metadata: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> Session:
         """Create a new session and register it in the store.
 
         Args:
             metadata: Optional key-value pairs to attach to the session
                       (e.g., user_id, transport type, feature flags).
+            session_id: Optional custom session identifier.
 
         Returns:
             The newly created ``Session`` instance.
         """
-        session = Session(metadata=metadata or {})
+        session_kwargs: Dict[str, Any] = {"metadata": metadata or {}}
+        if session_id:
+            session_kwargs["session_id"] = session_id
+        session = Session(**session_kwargs)
 
         async with self._lock:
             self._sessions[session.session_id] = session

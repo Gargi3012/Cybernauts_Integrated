@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, Query
+from fastapi import BackgroundTasks, FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -436,6 +436,138 @@ def get_categories():
             if cat and cat != "Unknown":
                 categories[cat] = categories.get(cat, 0) + 1
     return {"categories": categories}
+
+
+@app.post("/api/leads/{identifier}/dispatch-call", summary="Dispatch Outbound Qualification Call via Plivo")
+async def dispatch_lead_call(
+    identifier: str,
+    payload: Optional[dict] = None,
+):
+    """
+    Final Integration Endpoint (Team A → Team B Outbound Dispatch):
+    Validates lead and phone, checks idempotency, packages canonical company context,
+    initiates Plivo outbound call, and updates flowiz_leads.
+    """
+    import re
+    import uuid
+    import asyncio
+
+    repo = LeadRepository(DB_PATH)
+    lead = repo.get_lead_by_id_or_domain(identifier)
+    if not lead:
+        raise HTTPException(status_code=404, detail=f"Lead not found for identifier '{identifier}'")
+
+    # Determine target phone number
+    target_phone = None
+    if payload and isinstance(payload, dict):
+        target_phone = payload.get("phoneNumber") or payload.get("phone_number")
+        
+    if not target_phone:
+        if lead.phones:
+            target_phone = lead.phones[0]
+        elif lead.verified_phones:
+            target_phone = lead.verified_phones[0]
+
+    if not target_phone:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Lead '{lead.company_name}' does not have any callable phone numbers recorded."
+        )
+
+    # Sanitize and validate target phone (E.164 or numeric string)
+    clean_phone = re.sub(r"[^\d+]", "", str(target_phone))
+    if not clean_phone.startswith("+"):
+        if len(clean_phone) == 10:
+            clean_phone = "+91" + clean_phone
+        else:
+            clean_phone = "+" + clean_phone
+
+    if not re.match(r"^\+[1-9]\d{7,14}$", clean_phone):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Target phone number '{target_phone}' (cleaned: '{clean_phone}') is not a valid international phone format."
+        )
+
+    force = bool(payload.get("force", False)) if (payload and isinstance(payload, dict)) else False
+    custom_dispatch_id = payload.get("dispatch_id") if (payload and isinstance(payload, dict)) else None
+    dispatch_id = custom_dispatch_id or f"disp_{uuid.uuid4().hex[:12]}"
+    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+
+    # Idempotency Check: Prevent duplicate active calls
+    if not force and lead.call_status in ["initiating", "initiated", "ringing", "in_progress"]:
+        return {
+            "status": "in_progress",
+            "message": f"Lead '{lead.company_name}' already has an active qualification call ({lead.call_status}).",
+            "lead_id": lead.domain,
+            "provider_call_id": lead.provider_call_id,
+            "call_status": lead.call_status,
+            "session_id": lead.session_id,
+            "dispatch_id": dispatch_id,
+        }
+
+    # Mark as initiating
+    repo.update_lead_qualification(lead.domain, {
+        "call_status": "initiating",
+        "qualification_status": "in_progress",
+        "qualification_score": 0,
+        "session_id": session_id,
+    })
+
+    # Package isolated and sanitized Company Context
+    company_context = {
+        "lead_id": str(lead.domain),
+        "company_name": lead.company_name,
+        "domain": lead.domain or lead.website,
+        "industry": lead.industry,
+        "location": lead.location,
+        "tech_stack": lead.tech_stack,
+        "company_summary": lead.description,
+        "contact_name": lead.people[0].name if lead.people else "",
+        "contact_title": lead.people[0].designation if lead.people else "",
+        "lead_score": lead.lead_score or 0,
+        "lead_quality": lead.lead_quality or "",
+    }
+    context_str = json.dumps(company_context)
+
+    # Invoke Team B's Plivo outbound calling layer
+    try:
+        from Pillar_2.outbound_call import place_outbound_call
+        call_id = await asyncio.to_thread(
+            place_outbound_call,
+            clean_phone,
+            company_context=context_str,
+            lead_id=str(lead.domain),
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+        )
+    except Exception as e:
+        # Revert call status on failure
+        repo.update_lead_qualification(lead.domain, {
+            "call_status": "failed",
+            "qualification_status": "failed",
+            "conversation_summary": f"Dispatch failed: {str(e)}",
+            "session_id": session_id,
+        })
+        raise HTTPException(status_code=500, detail=f"Plivo outbound dispatch failed: {str(e)}")
+
+    # Update flowiz_leads with call ID, session ID, and status
+    repo.update_lead_qualification(lead.domain, {
+        "call_status": "initiated",
+        "qualification_status": "in_progress",
+        "provider_call_id": call_id,
+        "session_id": session_id,
+    })
+
+    return {
+        "status": "success",
+        "dispatch_id": dispatch_id,
+        "session_id": session_id,
+        "lead_id": lead.domain,
+        "provider": "plivo",
+        "provider_call_id": call_id,
+        "target_phone": clean_phone,
+        "company_context": company_context,
+    }
 
 
 

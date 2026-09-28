@@ -1,28 +1,23 @@
-import asyncio
+import os
 from fastapi.testclient import TestClient
 from app.main import app
-from twilio.request_validator import RequestValidator
-import os
+import plivo.utils
 from dotenv import load_dotenv
 
 load_dotenv()
-auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
-validator = RequestValidator(auth_token)
-url = "http://testserver/inbound-call"
-post_vars = {'To': '+917082968702', 'From': '+18303546921', 'CallSid': 'CA123'}
+auth_token = os.environ.get("PLIVO_AUTH_TOKEN", "mock_plivo_auth_token")
 
-signature = validator.compute_signature(url, post_vars)
-print(f"Computed Signature: {signature}")
+url = "http://testserver/inbound-call"
+post_vars = {"To": "+917082968702", "From": "+18303546921", "CallUUID": "plivo-call-123"}
 
 client = TestClient(app)
 try:
     response = client.post(
         "/inbound-call", 
-        data=post_vars,
-        headers={"X-Twilio-Signature": signature, "X-Forwarded-Proto": "http"}
+        data=post_vars
     )
-    print(response.status_code)
-    print(response.text)
+    print("Status:", response.status_code)
+    print("Response XML:\n", response.text)
 except Exception as e:
     import traceback
     traceback.print_exc()

@@ -18,7 +18,7 @@
             <div class="mode-selector-container">
                 <select id="calling-mode-select" class="mode-select">
                     <option value="webrtc">Browser (WebRTC) Mode</option>
-                    <option value="twilio_outbound">SIM-Based Calling (Twilio)</option>
+                    <option value="plivo_outbound">SIM-Based Calling (Plivo)</option>
                 </select>
                 <span id="transport-mode-indicator" class="transport-indicator hidden">Checking mode...</span>
             </div>
@@ -79,11 +79,11 @@
             </section>
         </main>
         
-        <div id="twilio-overlay" class="twilio-overlay hidden">
+        <div id="telephony-overlay" class="telephony-overlay hidden">
             <div class="overlay-content">
-                <h2>Twilio Mode Active</h2>
-                <p>System is in Twilio mode. Browser testing is not available.</p>
-                <p>Please switch TRANSPORT_MODE to "livekit" in your backend to use this frontend.</p>
+                <h2>Plivo Telephony Mode Active</h2>
+                <p>System is in Plivo telephony mode.</p>
+                <p>Please switch TRANSPORT_MODE to "livekit" in your backend to use browser WebRTC mode.</p>
             </div>
         </div>
 

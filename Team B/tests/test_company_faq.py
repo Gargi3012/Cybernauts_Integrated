@@ -18,9 +18,8 @@ async def test_refresh_faq_cache_success():
         
         block = get_faq_context_block()
         assert "COMPANY KNOWLEDGE BASE — Cybernauts" in block
-        assert "## About the Company" in block
-        assert "Q: What does Cybernauts do?" in block
-        assert "A: Cybernauts is an AI automation agency." in block
+        assert "[About the Company]" in block
+        assert "What does Cybernauts do? → Cybernauts is an AI automation agency." in block
 
 def test_context_block_is_string():
     block = get_faq_context_block()

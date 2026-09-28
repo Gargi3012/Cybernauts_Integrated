@@ -32,6 +32,12 @@
   --accent-border: #bbf7d0;        /* Emerald 200 */
   --accent-text: #166534;          /* Emerald 800 */
 
+  /* Flowiz Signature Pink Brand & Cursor Accent */
+  --flowiz-pink: #ec4899;
+  --flowiz-pink-gradient: linear-gradient(135deg, #f43f5e 0%, #ec4899 100%);
+  --flowiz-pink-glow: rgba(236, 72, 153, 0.55);
+  --flowiz-pink-glow-lg: rgba(236, 72, 153, 0.85);
+
   /* Status Colors */
   --color-success-bg: #f0fdf4;
   --color-success-border: #bbf7d0;

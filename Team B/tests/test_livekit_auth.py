@@ -13,7 +13,7 @@ async def test_control_plane_endpoints_require_auth():
     assert response.status_code in (401, 403)
 
     # 2. Outbound endpoint returns 401/403 without authorization header
-    response = client.post("/api/twilio/outbound", json={"phoneNumber": "+917082968702"})
+    response = client.post("/api/plivo/outbound", json={"phoneNumber": "+917082968702"})
     assert response.status_code in (401, 403)
 
 @pytest.mark.asyncio

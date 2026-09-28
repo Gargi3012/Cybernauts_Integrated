@@ -44,6 +44,7 @@ google_raw.html
 *.db-wal
 *.db-shm
 leads.db
+data/
 
 # OS & IDE artifacts
 .DS_Store

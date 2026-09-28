@@ -18,7 +18,7 @@ class UIManager {
         this.languageEl = document.getElementById('metric-language');
         this.emotionEl = document.getElementById('metric-emotion');
         this.toastContainer = document.getElementById('toast-container');
-        this.twilioOverlay = document.getElementById('twilio-overlay');
+        this.telephonyOverlay = document.getElementById('telephony-overlay');
         this.transportIndicator = document.getElementById('transport-mode-indicator');
         this.mainContent = document.getElementById('livekit-main');
         
@@ -32,12 +32,12 @@ class UIManager {
     }
 
     setTransportMode(mode) {
-        if (mode === 'twilio') {
-            this.twilioOverlay.classList.remove('hidden');
-            this.transportIndicator.textContent = 'Twilio Mode';
+        if (mode === 'plivo') {
+            if (this.telephonyOverlay) this.telephonyOverlay.classList.remove('hidden');
+            if (this.transportIndicator) this.transportIndicator.textContent = 'Plivo Mode';
         } else {
-            this.twilioOverlay.classList.add('hidden');
-            this.transportIndicator.textContent = 'LiveKit Mode';
+            if (this.telephonyOverlay) this.telephonyOverlay.classList.add('hidden');
+            if (this.transportIndicator) this.transportIndicator.textContent = 'LiveKit Mode';
         }
     }
 
@@ -495,7 +495,7 @@ class VoicePipelineClient {
         this.ui.updateMetrics(0, '-', '-');
 
         try {
-            const response = await fetch(`${this.prefix}/api/twilio/outbound`, {
+            const response = await fetch(`${this.prefix}/api/plivo/outbound`, {
                 method: 'POST',
                 headers: this.getAuthHeaders(),
                 body: JSON.stringify({ phoneNumber: phoneNumber })
@@ -514,9 +514,9 @@ class VoicePipelineClient {
             }
 
             const data = await response.json();
-            this.ui.showToast('Outbound call triggered successfully!', 'success');
+            this.ui.showToast('Plivo outbound call triggered successfully!', 'success');
             
-            // Set connection state to connected when Twilio call connects (indicated by WebSocket bridge events downstream)
+            // Set connection state to connected when call connects
             this.ui.setConnectionState('connected');
             this.ui.setStatus('Call active on SIM. Talking...', false, true);
 
@@ -531,7 +531,7 @@ class VoicePipelineClient {
         if (mode === 'webrtc') {
             this.ui.btnJoin.classList.remove('hidden');
             if (this.ui.phoneInputContainer) this.ui.phoneInputContainer.classList.add('hidden');
-        } else if (mode === 'twilio_outbound') {
+        } else if (mode === 'plivo_outbound') {
             this.ui.btnJoin.classList.add('hidden');
             if (this.ui.phoneInputContainer) this.ui.phoneInputContainer.classList.remove('hidden');
         }
