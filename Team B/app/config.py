@@ -1,3 +1,4 @@
+
 """
 Configuration — Loads all environment variables required by the pipeline.
 
@@ -11,8 +12,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from project root (works whether you run from repo root or app/)
+# Load .env from project root or workspace root (works whether you run from repo root or Team B)
 _project_root = Path(__file__).resolve().parent.parent
+load_dotenv(_project_root.parent / ".env", override=False)
 load_dotenv(_project_root / ".env", override=False)
 
 # ── Daily.co (WebRTC transport) ────────────────────────────────────────
@@ -68,9 +70,18 @@ SARVAM_TTS_MODEL: str = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
 BOT_NAME: str = os.getenv("BOT_NAME", "Cybernauts Agent")
 
 # ── Transport (Telephony/WebRTC transport) ────────────────────────────────
-TRANSPORT_MODE: str = os.getenv("TRANSPORT_MODE", "livekit") # "twilio", or "livekit"
+TRANSPORT_MODE: str = os.getenv("TRANSPORT_MODE", "plivo") # "plivo", "twilio", or "livekit"
+SERVER_BASE_URL: str = os.getenv("SERVER_BASE_URL") or os.getenv("PUBLIC_BASE_URL", "")
+
+# ── Plivo (Telephony) ──────────────────────────────────────────────────
+PLIVO_AUTH_ID: str = os.getenv("PLIVO_AUTH_ID", "")
+PLIVO_AUTH_TOKEN: str = os.getenv("PLIVO_AUTH_TOKEN", "")
+PLIVO_PHONE_NUMBER: str = os.getenv("PLIVO_PHONE_NUMBER", "")
+
+# ── Twilio (Telephony) ─────────────────────────────────────────────────
 TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "")
 
 # ── Database (Neon PostgreSQL) ──────────────────────────────────────────
 DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/voice_db")
