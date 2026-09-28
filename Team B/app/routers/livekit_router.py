@@ -152,18 +152,27 @@ async def join_livekit_room(request: dict = None):
         raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
 
 
+@router.post("/api/telephony/outbound", dependencies=[Depends(verify_jwt)])
 @router.post("/api/twilio/outbound", dependencies=[Depends(verify_jwt)])
 async def trigger_outbound_call(payload: dict):
     phone_number = payload.get("phoneNumber")
     if not phone_number:
         raise HTTPException(status_code=400, detail="phoneNumber is required")
-        
+
+    company_context = payload.get("companyContext")
+    transport_mode = os.getenv("TRANSPORT_MODE", "plivo").lower()
+
     try:
-        from Pillar_2.outbound_call import place_outbound_call
-        call_sid = await asyncio.to_thread(place_outbound_call, phone_number)
-        return {"status": "success", "callSid": call_sid}
+        if transport_mode == "twilio":
+            from Pillar_2.outbound_call import place_outbound_call
+            call_sid = await asyncio.to_thread(place_outbound_call, phone_number, company_context)
+            return {"status": "success", "callSid": call_sid, "provider": "twilio"}
+        else:
+            from Pillar_2.plivo_outbound import place_plivo_outbound_call
+            call_sid = await asyncio.to_thread(place_plivo_outbound_call, phone_number, company_context)
+            return {"status": "success", "callSid": call_sid, "provider": "plivo"}
     except Exception as e:
-        logger.exception(f"Failed to place outbound call: {e}")
+        logger.exception(f"Failed to place outbound call via {transport_mode}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -187,11 +196,21 @@ async def get_call_history():
                 phone = s.client.phone_number if s.client else "Unknown"
                 summary = s.client.summary.summary if (s.client and s.client.summary) else "No summary recorded."
                 duration_str = f"{s.duration}s" if s.duration else "—"
+                t_mode = os.getenv("TRANSPORT_MODE", "plivo").lower()
+                if "plivo" in s.session_id.lower():
+                    t_label = "Plivo Telephony"
+                elif "twilio" in s.session_id.lower():
+                    t_label = "Twilio Telephony"
+                elif phone.startswith("+"):
+                    t_label = "Plivo Telephony" if t_mode == "plivo" else "Twilio Telephony"
+                else:
+                    t_label = "LiveKit WebRTC"
+
                 history.append({
                     "id": str(s.id),
                     "sessionId": s.session_id,
                     "phone": phone,
-                    "transport": "Twilio Telephony" if ("twilio" in s.session_id.lower() or phone.startswith("+")) else "LiveKit WebRTC",
+                    "transport": t_label,
                     "duration": duration_str,
                     "status": s.status or "COMPLETED",
                     "summary": summary,

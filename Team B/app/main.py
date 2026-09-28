@@ -38,7 +38,7 @@ from app.session.manager import SessionManager
 from app.session.state import SessionState
 
 from app.adapters.pipecat.factory import PipecatFactory
-from app.adapters.pipecat.transport import TwilioTransportAdapter
+from app.adapters.pipecat.transport import TwilioTransportAdapter, PlivoTransportAdapter
 
 
 import time
@@ -176,9 +176,149 @@ app.add_middleware(
 
 app.include_router(livekit_router.router)
 
+
+def validate_plivo_request(request: Request, form_dict: dict) -> bool:
+    """Validate incoming Plivo webhook signature using Plivo V3 auth scheme."""
+    from app.config import PLIVO_AUTH_TOKEN, SERVER_BASE_URL
+    import os
+
+    signature = request.headers.get("X-Plivo-Signature-V3", "")
+    nonce = request.headers.get("X-Plivo-Signature-V3-Nonce", "")
+
+    # If no signature or token, evaluate environment bypass
+    if not signature or not PLIVO_AUTH_TOKEN:
+        if os.getenv("ENVIRONMENT", "development").lower() == "development":
+            return True
+        return False
+
+    public_url = (SERVER_BASE_URL or os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
+    if public_url:
+        validator_url = f"{public_url}{request.url.path}"
+        if request.url.query:
+            validator_url += f"?{request.url.query}"
+    else:
+        validator_url = str(request.url)
+
+    try:
+        import plivo.utils
+        is_valid = plivo.utils.validate_v3_signature(
+            method=request.method,
+            uri=validator_url,
+            nonce=nonce,
+            auth_token=PLIVO_AUTH_TOKEN,
+            v3_signature=signature,
+            params=form_dict,
+        )
+        return is_valid
+    except Exception as e:
+        logger.warning(f"Error executing Plivo signature validation: {e}")
+        return False
+
+
+@app.post("/plivo/inbound-call")
+@app.get("/plivo/inbound-call")
+@app.post("/plivo-answer")
+@app.get("/plivo-answer")
+async def handle_plivo_inbound_call(request: Request):
+    """Plivo webhook endpoint. Returns Plivo XML to connect to our WebSocket."""
+    webhook_processing_start = time.perf_counter()
+    logger.info("Incoming Plivo call received")
+
+    # ── Backend Readiness ──
+    if not APP_STATE.get("is_ready"):
+        logger.warning("Incoming Plivo call rejected: Backend not ready.")
+        raise HTTPException(status_code=503, detail="Service not ready")
+
+    if request.method == "POST":
+        form_data = await request.form()
+        form_dict = {k: v for k, v in form_data.items()}
+    else:
+        form_dict = dict(request.query_params)
+
+    # ── Security: Plivo Signature Validation ─────────────────────────────
+    is_valid = validate_plivo_request(request, form_dict)
+    client_ip = request.client.host if request.client else "unknown"
+    if not is_valid:
+        if os.getenv("ENVIRONMENT", "development").lower() == "development":
+            logger.warning(f"SECURITY: Invalid Plivo signature from {client_ip}. Bypassing in development mode.")
+        else:
+            logger.warning(f"SECURITY: Invalid Plivo signature from {client_ip}. Rejecting request.")
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+    # In Plivo, 'From' is caller, 'To' is dialed number, 'CallUUID' is call ID
+    caller_phone = form_dict.get("From", "")
+    to_phone = form_dict.get("To", "")
+    call_id = form_dict.get("CallUUID", "")
+    phone_number = caller_phone if caller_phone else to_phone or "unknown_client"
+
+    # ── Database Pre-fetch ───────────────────────────────────────────────
+    from app.db.connection import db_manager
+    from app.repositories.client_repository import ClientRepository
+    from app.repositories.session_repository import SessionRepository
+
+    client_id_str = ""
+    previous_summary = ""
+
+    try:
+        async def fetch_db():
+            import asyncio
+            for attempt in range(2):
+                try:
+                    async with db_manager.get_session() as db:
+                        client = await ClientRepository.get_or_create_client(db, phone_number)
+                        summary_text = await SessionRepository.get_summary(db, client.id)
+                        return str(client.id), summary_text
+                except Exception as db_err:
+                    if attempt == 1:
+                        raise db_err
+                    await asyncio.sleep(0.5)
+
+        client_id_str, summary_text = await asyncio.wait_for(fetch_db(), timeout=3.0)
+        if summary_text:
+            previous_summary = summary_text
+    except Exception as e:
+        logger.error(f"Failed DB pre-fetch for Plivo call: {e}")
+
+    import urllib.parse
+    phone_encoded = urllib.parse.quote(phone_number)
+    client_id_encoded = urllib.parse.quote(client_id_str)
+    call_id_encoded = urllib.parse.quote(call_id)
+
+    # Resolve the host for the websocket stream
+    import os
+    public_url = os.getenv("SERVER_BASE_URL") or os.getenv("PUBLIC_BASE_URL", "")
+    if public_url:
+        stream_base = public_url.replace("http://", "ws://").replace("https://", "wss://")
+    else:
+        host = request.headers.get("host", "localhost:8000")
+        scheme = "wss" if "ngrok" in host or request.headers.get("x-forwarded-proto") == "https" else "ws"
+        stream_base = f"{scheme}://{host}"
+
+    stream_url = f"{stream_base}/ws/plivo?phone={phone_encoded}&client_id={client_id_encoded}&call_id={call_id_encoded}"
+    extra_headers = f"phone={phone_number};client_id={client_id_str};call_id={call_id};previous_summary={xml_escape(previous_summary)}"
+
+    plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000" extraHeaders="{extra_headers}">
+        {stream_url}
+    </Stream>
+</Response>
+"""
+    return HTMLResponse(content=plivo_xml, media_type="application/xml")
+
+
 @app.post("/inbound-call")
 async def handle_inbound_call(request: Request):
-    """Twilio webhook endpoint. Returns TwiML to connect to our WebSocket."""
+    """Telephony webhook endpoint. Dispatches to Plivo or Twilio based on TRANSPORT_MODE or request headers."""
+    # Check if request is destined for Plivo
+    is_plivo = (
+        TRANSPORT_MODE.lower() == "plivo"
+        or "X-Plivo-Signature-V3" in request.headers
+        or "X-Plivo-Signature-V2" in request.headers
+    )
+    if is_plivo:
+        return await handle_plivo_inbound_call(request)
+
     webhook_processing_start = time.perf_counter()
     logger.info("Incoming Twilio call received")
     
@@ -429,6 +569,170 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info(f"[Worker-{os.getpid()}] Released distributed ownership for stream {stream_sid}")
             except Exception as e:
                 logger.error(f"Failed to cleanup active stream {stream_sid} from DB: {e}")
+
+
+@app.websocket("/ws/plivo")
+@app.websocket("/plivo-ws")
+async def plivo_websocket_endpoint(websocket: WebSocket):
+    """Plivo WebSocket endpoint for Pipecat audio stream."""
+    media_stream_connection = time.perf_counter()
+    try:
+        await websocket.accept()
+        logger.info("WebSocket connection accepted from Plivo")
+    except Exception as accept_err:
+        logger.error(f"Failed to accept Plivo WebSocket connection: {accept_err}")
+        return
+
+    stream_id = None
+    call_id = websocket.query_params.get("call_id", "")
+    phone_number = websocket.query_params.get("phone", "unknown_client")
+    client_id_str = websocket.query_params.get("client_id", "")
+    company_context = ""
+    previous_summary = ""
+
+    import json
+    import asyncio
+    try:
+        for _ in range(10):
+            data = await websocket.receive_text()
+            logger.debug(f"Raw Plivo WS message: {data[:200]}")
+            msg = json.loads(data)
+            event = msg.get("event")
+
+            if event == "start":
+                start_data = msg.get("start", {})
+                stream_id = start_data.get("streamId")
+                call_id = start_data.get("callId", call_id)
+
+                # Parse extra_headers if present (e.g. "key1=val1;key2=val2")
+                extra_headers_str = msg.get("extra_headers") or ""
+                if extra_headers_str:
+                    for pair in extra_headers_str.split(";"):
+                        if "=" in pair:
+                            k, v = pair.split("=", 1)
+                            k = k.strip()
+                            v = v.strip()
+                            if k == "phone" and (phone_number == "unknown_client" or not phone_number):
+                                phone_number = v
+                            elif k == "client_id" and not client_id_str:
+                                client_id_str = v
+                            elif k == "call_id" and not call_id:
+                                call_id = v
+                            elif k == "previous_summary" and not previous_summary:
+                                previous_summary = v
+
+                # Prevention of duplicate session creation via Postgres atomic insert
+                from sqlalchemy.exc import IntegrityError
+                from app.db.connection import db_manager
+                from app.db.models import ActiveStream
+                import os
+
+                try:
+                    async with db_manager.get_session() as db:
+                        worker_id = str(os.getpid())
+                        active_stream = ActiveStream(stream_sid=stream_id, worker_id=worker_id)
+                        db.add(active_stream)
+                        await db.flush()
+                except IntegrityError:
+                    logger.warning(f"[Worker-{os.getpid()}] Duplicate Plivo WS connection for stream {stream_id}. Rejecting.")
+                    return
+                except Exception as e:
+                    logger.error(f"[Worker-{os.getpid()}] Failed to claim stream ownership for {stream_id}: {e}. Proceeding anyway...")
+
+                logger.info(f"[Worker-{os.getpid()}] Successfully claimed ownership of Plivo stream {stream_id}")
+                first_audio_packet = time.perf_counter()
+                connection_metrics = {
+                    "webhook_processing_start": media_stream_connection,
+                    "media_stream_connection": media_stream_connection,
+                    "first_audio_packet": first_audio_packet,
+                }
+                masked_phone = f"{phone_number[:3]}******{phone_number[-4:]}" if len(phone_number) > 7 and phone_number != "unknown_client" else phone_number
+                logger.info(f"Plivo stream started: {stream_id} | call_id: {call_id} | phone: {masked_phone} | client_id: {client_id_str}")
+                break
+            elif event in ("connected", "media"):
+                continue
+
+        if not stream_id:
+            logger.error("Did not receive 'start' event from Plivo")
+            await websocket.close()
+            return
+
+    except Exception as ws_err:
+        logger.error(f"Plivo WebSocket closed unexpectedly before start event: {ws_err}")
+        return
+
+    from app.config import PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN
+    from app.adapters.pipecat.transport import PlivoTransportAdapter
+
+    transport = PlivoTransportAdapter(
+        websocket=websocket,
+        stream_id=stream_id,
+        call_id=call_id,
+        auth_id=PLIVO_AUTH_ID,
+        auth_token=PLIVO_AUTH_TOKEN,
+    )
+
+    # Database Pre-fetch FALLBACK
+    if not previous_summary and (client_id_str or phone_number != "unknown_client"):
+        try:
+            from app.db.connection import db_manager
+            from app.repositories.session_repository import SessionRepository
+            from app.repositories.client_repository import ClientRepository
+            import uuid
+
+            async def fetch_db_ws():
+                nonlocal client_id_str
+                async with db_manager.get_session() as db:
+                    if client_id_str:
+                        client_uuid = uuid.UUID(client_id_str)
+                    else:
+                        client = await ClientRepository.get_or_create_client(db, phone_number)
+                        client_uuid = client.id
+                        client_id_str = str(client_uuid)
+                    return await SessionRepository.get_summary(db, client_uuid)
+
+            summary_text = await asyncio.wait_for(fetch_db_ws(), timeout=3.0)
+            if summary_text:
+                logger.info(f"Retrieved DB summary for Plivo client {client_id_str}: {summary_text[:50]}...")
+                previous_summary = summary_text
+        except Exception as e:
+            logger.error(f"Failed to fetch summary in Plivo websocket: {e}")
+
+    # Block and run the voice session on this websocket
+    try:
+        await run_voice_session(
+            transport=transport,
+            phone_number=phone_number,
+            company_context=company_context,
+            client_id_str=client_id_str,
+            previous_summary=previous_summary,
+            connection_metrics=connection_metrics,
+        )
+    except WebSocketDisconnect as e:
+        logger.warning(f"Plivo WebSocket disconnected in endpoint: code={e.code}, reason={e.reason}")
+    except Exception as exc:
+        logger.exception(f"Unhandled exception in Plivo websocket endpoint: {exc}")
+    finally:
+        try:
+            from fastapi.websockets import WebSocketState
+            if websocket.client_state != WebSocketState.DISCONNECTED:
+                logger.info("Closing Plivo WebSocket connection gracefully")
+                await websocket.close()
+        except Exception as close_err:
+            logger.warning(f"Error while closing Plivo WebSocket: {close_err}")
+
+        # Cleanup of abandoned streams from distributed store
+        if stream_id:
+            try:
+                from sqlalchemy import delete
+                from app.db.connection import db_manager
+                from app.db.models import ActiveStream
+                async with db_manager.get_session() as db:
+                    await db.execute(delete(ActiveStream).where(ActiveStream.stream_sid == stream_id))
+                import os
+                logger.info(f"[Worker-{os.getpid()}] Released distributed ownership for Plivo stream {stream_id}")
+            except Exception as e:
+                logger.error(f"Failed to cleanup active stream {stream_id} from DB: {e}")
 
 
 # ── Core Pipeline Session ───────────────────────────────────────────────
@@ -715,10 +1019,12 @@ async def run_voice_session(
             )
             # LiveKitTransport does not have a register_events method to call here
             logger.info("LiveKitTransportAdapter ready | room={r}", r=LIVEKIT_URL)
+        elif TRANSPORT_MODE.lower() in ("twilio", "plivo"):
+            raise ValueError(f"For telephony mode '{TRANSPORT_MODE}', voice session is initiated via incoming/outbound WebSocket.")
         else:
-            raise ValueError(f"TRANSPORT_MODE '{TRANSPORT_MODE}' is invalid. Supported: 'twilio', 'livekit'.")
+            raise ValueError(f"TRANSPORT_MODE '{TRANSPORT_MODE}' is invalid. Supported: 'plivo', 'twilio', 'livekit'.")
     else:
-        logger.info("TwilioTransportAdapter injected via WebSocket.")
+        logger.info(f"{type(transport).__name__} injected via WebSocket.")
 
     # ── 6. Execution UUID ───────────────────────────────────────────────
     execution_id = str(uuid.uuid4())

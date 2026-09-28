@@ -228,7 +228,7 @@ class LiveAgentView {
         <div class="card" style="margin-bottom: 24px;">
           <div style="font-weight: 600; font-size: 15px; margin-bottom: 6px;">SIM-Based Outbound Telephony</div>
           <div class="text-muted" style="font-size: 13px; margin-bottom: 18px;">
-            Trigger an automated outbound phone call using Twilio REST API to connect a recipient to the Pipecat AI agent.
+            Trigger an automated outbound phone call using Plivo REST API to connect a recipient to the Pipecat AI agent.
           </div>
 
           <div style="display: flex; gap: 12px; max-width: 480px; align-items: center;">
@@ -368,14 +368,15 @@ class LiveAgentView {
           if (callNotice) {
             callNotice.style.display = 'block';
             callNotice.className = 'text-muted';
-            callNotice.innerText = 'Initiating Twilio outbound call...';
+            callNotice.innerText = 'Initiating telephony outbound call...';
           }
 
           const res = await window.api.triggerOutboundCall(phone);
           if (res && res.status === 'success') {
             if (callNotice) {
               callNotice.className = 'badge badge-success';
-              callNotice.innerText = `Call Initiated! SID: ${res.callSid}`;
+              const prov = res.provider ? (res.provider.charAt(0).toUpperCase() + res.provider.slice(1)) : 'Plivo';
+              callNotice.innerText = `Call Initiated via ${prov}! UUID: ${res.callSid}`;
             }
           }
         } catch (err) {
