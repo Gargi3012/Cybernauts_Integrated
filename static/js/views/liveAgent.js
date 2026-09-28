@@ -398,9 +398,24 @@ class LiveAgentView {
 
     try {
       // Step 2: Check Admin JWT Auth
-      const jwtToken = localStorage.getItem('jwt_token');
+      let jwtToken = localStorage.getItem('jwt_token');
+      if (jwtToken) {
+        try {
+          const payload = JSON.parse(atob(jwtToken.split('.')[1]));
+          if ((payload.exp * 1000) < Date.now()) {
+            localStorage.removeItem('jwt_token');
+            jwtToken = null;
+          }
+        } catch (e) {
+          localStorage.removeItem('jwt_token');
+          jwtToken = null;
+        }
+      }
+
       if (!jwtToken) {
-        throw new Error("Admin authentication required. Click 'Admin Auth' in the top header to log in.");
+        const authOverlay = document.getElementById('auth-modal-overlay');
+        if (authOverlay) authOverlay.classList.remove('hidden');
+        throw new Error("Admin login required. Please enter username (admin) and password (admin123) in the dialog.");
       }
       console.log("[2] JWT verified");
 
