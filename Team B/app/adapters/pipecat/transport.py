@@ -63,6 +63,31 @@ class PlivoTransportAdapter(PipecatTransportAdapter):
         return self.transport
 
 
+class PlivoTransportAdapter(PipecatTransportAdapter):
+    """Implementation for Plivo WebSockets."""
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        stream_id: str,
+        call_id: str | None = None,
+        auth_id: str | None = None,
+        auth_token: str | None = None,
+    ):
+        pillar2_plivo = _import_pillar2_module("pillar2_plivo", "plivo_bot.py")
+        self.transport = pillar2_plivo.build_plivo_transport(
+            websocket=websocket,
+            stream_id=stream_id,
+            call_id=call_id,
+            auth_id=auth_id,
+            auth_token=auth_token,
+            vad_analyzer=_build_vad_analyzer(),
+        )
+
+    def get_pipecat_transport(self) -> Any:
+        return self.transport
+
+
 class LiveKitTransportAdapter(PipecatTransportAdapter):
     """Implementation for LiveKit WebRTC."""
 

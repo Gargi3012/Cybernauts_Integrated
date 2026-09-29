@@ -43,6 +43,14 @@ async function fetchJSON(url, options = {}) {
     }
 
     if (!res.ok) {
+      if (res.status === 401 && (data.detail === "Token has expired" || data.detail === "Invalid authentication token")) {
+        localStorage.removeItem("jwt_token");
+        const btnText = document.getElementById('btnHeaderActionText');
+        if (btnText) btnText.innerText = "Admin Auth";
+        const authOverlay = document.getElementById('auth-modal-overlay');
+        if (authOverlay) authOverlay.classList.remove('hidden');
+        throw new Error("Admin session expired. Please sign in again (Username: admin, Password: admin123).");
+      }
       throw new Error(data.detail || data.error || data.message || `HTTP ${res.status}`);
     }
     return data;

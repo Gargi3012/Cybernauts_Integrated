@@ -735,13 +735,13 @@ class PipecatAdapter:
                         if hasattr(self.task, "_llm_context"):
                             self.task._llm_context.add_message({
                                 "role": "assistant", 
-                                "content": "Hello, I'm Sarah from Cybernauts Noida. How can I assist you?"
+                                "content": "Hello, this is Sarah from Cybernauts. How can I help you?"
                             })
                         frames_to_queue = None
                     else:
                         logger.bind(session_id=self.session_id).warning("greetings.wav not found. Synthesizing greeting dynamically.")
                         frames_to_queue = [
-                            TTSSpeakFrame(text="Hello, I'm Sarah from Cybernauts Noida. How can I assist you?", append_to_context=True),
+                            TTSSpeakFrame(text="Hello, this is Sarah from Cybernauts. How can I help you?", append_to_context=True),
                             BotStoppedSpeakingFrame()
                         ]
                 

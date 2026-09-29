@@ -119,8 +119,22 @@ class CybernautsApp {
     const btnCloseAuth = document.getElementById('btn-close-auth');
     const btnLoginSubmit = document.getElementById('btn-login-submit');
 
+    const isTokenExpired = (tok) => {
+      if (!tok) return true;
+      try {
+        const payload = JSON.parse(atob(tok.split('.')[1]));
+        return (payload.exp * 1000) < Date.now();
+      } catch (e) {
+        return true;
+      }
+    };
+
     const updateAuthUI = () => {
-      const token = localStorage.getItem("jwt_token");
+      let token = localStorage.getItem("jwt_token");
+      if (token && isTokenExpired(token)) {
+        localStorage.removeItem("jwt_token");
+        token = null;
+      }
       const btnText = document.getElementById('btnHeaderActionText');
       const btnIcon = btnHeaderAction ? btnHeaderAction.querySelector('i') : null;
 

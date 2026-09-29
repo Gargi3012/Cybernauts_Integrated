@@ -892,5 +892,38 @@
         "timestamp": 1790640661.744753
       }
     ]
+  },
+  "default||Artificial Intelligence startups India||3||0": {
+    "query": "Artificial Intelligence startups India",
+    "provider": "serpapi",
+    "timestamp": 1790641612.511157,
+    "result_count": 2,
+    "kind": "success",
+    "results": [
+      {
+        "title": "Artificial Intelligence companies in Bengaluru, India",
+        "url": "https://tracxn.com/d/artificial-intelligence/ai-startups-in-bengaluru-in-india/__ZQxRmtTM4J0EfR1v2j8sJ8Yj2o92gBdjUEmhKll71H8/companies",
+        "snippet": "There are 837 Artificial Intelligence companies in Bengaluru, India which include Sarvam, CommerceIQ, Atomicwork, Ai Palette, FinBox.",
+        "provider": "serpapi",
+        "source": "Google",
+        "rank": 0,
+        "provider_rank": 1,
+        "query": "Artificial Intelligence startups India",
+        "page": 0,
+        "timestamp": 1790641612.4701078
+      },
+      {
+        "title": "US tech giants deepen AI, digital investments in India",
+        "url": "https://coingeek.com/us-tech-giants-deepen-ai-digital-investments-in-india/",
+        "snippet": "Google, Anthropic, and Qualcomm ramp up AI investments in India, aligning with the IndiaAI Mission to boost innovation, jobs, and digital ...",
+        "provider": "serpapi",
+        "source": "Google",
+        "rank": 0,
+        "provider_rank": 3,
+        "query": "Artificial Intelligence startups India",
+        "page": 0,
+        "timestamp": 1790641612.4701078
+      }
+    ]
   }
 }
