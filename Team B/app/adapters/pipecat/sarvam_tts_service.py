@@ -29,7 +29,16 @@ class SarvamTTSService(TTSService):
         sample_rate: Optional[int] = 16000,
         **kwargs
     ):
-        super().__init__(sample_rate=sample_rate, **kwargs)
+        from pipecat.services.settings import TTSSettings
+        super().__init__(
+            sample_rate=sample_rate,
+            settings=TTSSettings(
+                model=model,
+                voice=voice.lower(),
+                language=target_language_code,
+            ),
+            **kwargs
+        )
         self.api_key = api_key
         self.voice = voice.lower()
         self.model = model

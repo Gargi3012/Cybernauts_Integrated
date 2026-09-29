@@ -33,11 +33,17 @@ def get_default_db_path() -> str:
 def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     Creates and returns a SQLite connection with Row factory enabled.
-    Ensures connection isolation and deterministic timeout.
+    Ensures connection isolation, 30s busy timeout, and WAL mode for high concurrency.
     """
     path = get_db_path(db_path)
-    conn = sqlite3.connect(path, timeout=15.0)
+    conn = sqlite3.connect(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
+    except Exception:
+        pass
     return conn
 
 
@@ -70,6 +76,17 @@ def setup_database(cursor: sqlite3.Cursor) -> None:
             confidence_score REAL,
             lead_quality TEXT,
             keyword TEXT,
+            call_status TEXT DEFAULT 'uncalled',
+            qualification_status TEXT DEFAULT 'pending',
+            qualification_score INTEGER DEFAULT 0,
+            interest_level TEXT,
+            pain_points TEXT,
+            budget TEXT,
+            timeline TEXT,
+            conversation_summary TEXT,
+            last_contacted_at TIMESTAMP,
+            provider_call_id TEXT,
+            session_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -90,9 +107,19 @@ def setup_database(cursor: sqlite3.Cursor) -> None:
         ("confidence_score", "REAL"),
         ("lead_quality", "TEXT"),
         ("keyword", "TEXT"),
+        ("call_status", "TEXT"),
+        ("qualification_status", "TEXT"),
+        ("qualification_score", "INTEGER"),
+        ("interest_level", "TEXT"),
+        ("pain_points", "TEXT"),
+        ("budget", "TEXT"),
+        ("timeline", "TEXT"),
+        ("conversation_summary", "TEXT"),
+        ("last_contacted_at", "TIMESTAMP"),
+        ("provider_call_id", "TEXT"),
+        ("session_id", "TEXT"),
         ("created_at", "TIMESTAMP"),
     ]
-
 
     for col_name, col_type in canonical_cols:
         if col_name not in existing_cols:

@@ -152,25 +152,38 @@ async def join_livekit_room(request: dict = None):
         raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
 
 
+@router.post("/api/plivo/outbound", dependencies=[Depends(verify_jwt)])
 @router.post("/api/telephony/outbound", dependencies=[Depends(verify_jwt)])
 @router.post("/api/twilio/outbound", dependencies=[Depends(verify_jwt)])
 async def trigger_outbound_call(payload: dict):
-    phone_number = payload.get("phoneNumber")
+    phone_number = payload.get("phoneNumber") or payload.get("phone_number")
     if not phone_number:
         raise HTTPException(status_code=400, detail="phoneNumber is required")
 
-    company_context = payload.get("companyContext")
+    company_context = payload.get("company_context") or payload.get("companyContext")
+    import json
+    company_context_str = json.dumps(company_context) if isinstance(company_context, dict) else (company_context or None)
+    lead_id = payload.get("lead_id")
     transport_mode = os.getenv("TRANSPORT_MODE", "plivo").lower()
 
     try:
         if transport_mode == "twilio":
             from Pillar_2.outbound_call import place_outbound_call
-            call_sid = await asyncio.to_thread(place_outbound_call, phone_number, company_context)
-            return {"status": "success", "callSid": call_sid, "provider": "twilio"}
+            call_sid = await asyncio.to_thread(place_outbound_call, phone_number, company_context_str)
+            return {"status": "success", "callSid": call_sid, "call_id": call_sid, "provider": "twilio"}
         else:
-            from Pillar_2.plivo_outbound import place_plivo_outbound_call
-            call_sid = await asyncio.to_thread(place_plivo_outbound_call, phone_number, company_context)
-            return {"status": "success", "callSid": call_sid, "provider": "plivo"}
+            try:
+                from Pillar_2.outbound_call import place_outbound_call
+                call_id = await asyncio.to_thread(
+                    place_outbound_call,
+                    phone_number,
+                    company_context=company_context_str,
+                    lead_id=lead_id
+                )
+            except Exception:
+                from Pillar_2.plivo_outbound import place_plivo_outbound_call
+                call_id = await asyncio.to_thread(place_plivo_outbound_call, phone_number, company_context_str)
+            return {"status": "success", "callSid": call_id, "call_id": call_id, "provider": "plivo"}
     except Exception as e:
         logger.exception(f"Failed to place outbound call via {transport_mode}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -216,34 +229,11 @@ async def get_call_history():
                     "summary": summary,
                     "startedAt": s.started_at.isoformat() if s.started_at else None
                 })
-            if history:
-                return {"calls": history}
+            return {"calls": history}
     except Exception as e:
         logger.warning(f"Failed to fetch call history from DB: {e}")
 
-    # Fallback default items if DB returns empty
-    return {"calls": [
-        {
-            "id": "1",
-            "sessionId": "mock-1",
-            "phone": "+1 (737) 221-2163",
-            "transport": "Twilio Telephony",
-            "duration": "1m 42s",
-            "status": "COMPLETED",
-            "summary": "Caller inquired about AI capabilities and requested an executive follow-up call.",
-            "startedAt": datetime.now().isoformat()
-        },
-        {
-            "id": "2",
-            "sessionId": "mock-2",
-            "phone": "+91 98765 43210",
-            "transport": "LiveKit WebRTC",
-            "duration": "3m 15s",
-            "status": "COMPLETED",
-            "summary": "Tested Sarvam Shreya voice pipeline in Hinglish. Captured name and project details.",
-            "startedAt": datetime.now().isoformat()
-        }
-    ]}
+    return {"calls": []}
 
 
 @router.websocket("/ws/frontend")

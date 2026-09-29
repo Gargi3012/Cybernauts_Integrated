@@ -23,6 +23,8 @@ class PipecatFactory:
         fsm: Optional[Any] = None,
         latency_tracker: Optional[Any] = None,
         previous_summary: str = "",
+        company_context: Optional[dict] = None,
+        lead_id: Optional[str] = None,
     ) -> PipecatAdapter:
         """Create and return a configured PipecatAdapter.
 
@@ -31,12 +33,14 @@ class PipecatFactory:
             event_bus:    Shared EventBus instance.
             session_id:   Session UUID.
             execution_id: Execution UUID for this run.
-            transport:    Optional transport adapter (LiveKitTransportAdapter
-                          in production, MockWebRTCTransport in tests).
+            transport:    Optional transport adapter (PlivoTransportAdapter,
+                          LiveKitTransportAdapter, or MockWebRTCTransport).
             fsm:          Optional ConversationStateMachine.  When provided,
                           the adapter drives FSM state on each pipeline stage.
             latency_tracker: Optional tracker for latency metrics.
             previous_summary: Optional previous conversation summary.
+            company_context: Optional Team A lead company context dictionary.
+            lead_id:      Optional Team A lead identifier.
         """
         return PipecatAdapter(
             pipeline=pipeline,
@@ -47,4 +51,6 @@ class PipecatFactory:
             fsm=fsm,
             latency_tracker=latency_tracker,
             previous_summary=previous_summary,
+            company_context=company_context,
+            lead_id=lead_id,
         )

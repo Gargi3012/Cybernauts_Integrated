@@ -71,12 +71,13 @@ BOT_NAME: str = os.getenv("BOT_NAME", "Cybernauts Agent")
 
 # ── Transport (Telephony/WebRTC transport) ────────────────────────────────
 TRANSPORT_MODE: str = os.getenv("TRANSPORT_MODE", "plivo") # "plivo", "twilio", or "livekit"
+PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL", "")
 SERVER_BASE_URL: str = os.getenv("SERVER_BASE_URL") or os.getenv("PUBLIC_BASE_URL", "")
 
 # ── Plivo (Telephony) ──────────────────────────────────────────────────
 PLIVO_AUTH_ID: str = os.getenv("PLIVO_AUTH_ID", "")
 PLIVO_AUTH_TOKEN: str = os.getenv("PLIVO_AUTH_TOKEN", "")
-PLIVO_PHONE_NUMBER: str = os.getenv("PLIVO_PHONE_NUMBER", "")
+PLIVO_PHONE_NUMBER: str = os.getenv("PLIVO_PHONE_NUMBER", os.getenv("PLIVO_FROM_NUMBER", ""))
 
 # ── Twilio (Telephony) ─────────────────────────────────────────────────
 TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")

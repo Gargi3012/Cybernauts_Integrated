@@ -24,7 +24,7 @@ It provides an orchestration framework capable of handling streaming audio and b
 - Pipeline Builder & Runner
 - Pipecat Runtime
 - LiveKit Transport
-- Twilio Telephony Transport
+- Plivo Telephony Transport
 - Deepgram / Sarvam STT
 - Groq / OpenAI LLM
 - ElevenLabs / Cartesia / Sarvam TTS (including Shreya voice)
@@ -42,7 +42,7 @@ flowchart TD
     E --> F[TTS Service]
     F --> G[Audio Response]
 
-    B_NOTE["LiveKit or Twilio"]
+    B_NOTE["LiveKit or Plivo"]
     C_NOTE["Deepgram or Sarvam Saaras"]
     D_NOTE["Session → FSM → EventBus → Pipeline Runner"]
     E_NOTE["Groq or OpenAI or Gemini"]
@@ -66,7 +66,7 @@ flowchart TD
 | 🔀 **Pipeline Orchestration**         | Directed acyclic graph (DAG) builder and pipeline runner.                                                                               |
 | 🔌 **Provider Abstraction**           | Loose coupling between the orchestration layer and AI service providers.                                                                |
 | 🌐 **LiveKit Transport**              | Full WebRTC support for browser and client applications.                                                                                |
-| 📞 **Twilio Telephony**               | Production-ready inbound phone-call routing via WebSockets.                                                                             |
+| 📞 **Plivo Telephony**                | Production-ready outbound & inbound phone-call routing via WebSockets and Plivo XML Stream.                                              |
 | 📝 **Streaming STT**                  | Continuous, word-level speech transcription via Deepgram & Sarvam AI.                                                                   |
 | 🔊 **Modular TTS**                    | Byte-streaming synthesized audio playback via ElevenLabs, Cartesia, & Sarvam AI (Shreya voice).                                          |
 | 🧠 **Conversation Context**           | Maintains awareness across long-running conversations.                                                                                  |
@@ -110,8 +110,8 @@ flowchart TD
   <img src="https://img.shields.io/badge/LiveKit-Transport-FF3E00?style=for-the-badge&logo=livekit&logoColor=white" alt="LiveKit">
 </a>
 
-<a href="https://www.twilio.com/" target="_blank">
-  <img src="https://img.shields.io/badge/Twilio-Telephony-F22F46?style=for-the-badge&logo=twilio&logoColor=white" alt="Twilio">
+<a href="https://www.plivo.com/" target="_blank">
+  <img src="https://img.shields.io/badge/Plivo-Telephony-00A651?style=for-the-badge&logoColor=white" alt="Plivo">
 </a>
 
 <a href="https://deepgram.com/" target="_blank">
@@ -153,7 +153,7 @@ flowchart TD
 - **Pipeline Builder**: A DAG builder that allows programmatic insertion of custom processing layers.
 - **Pipeline Runner**: Resolves the DAG topologically and triggers execution gracefully.
 - **Pipecat Adapter Layer**: Decouples our custom architectural abstractions from the concrete `pipecat-ai` library.
-- **Transport Layer**: The abstraction providing `LiveKit` (WebRTC) and `Twilio` (Telephony) input/output.
+- **Transport Layer**: The abstraction providing `LiveKit` (WebRTC) and `Plivo` (Telephony) input/output.
 - **STT**: Transcribes real-time audio from the transport into text tokens.
 - **LLM**: Interprets text and streams conversational responses.
 - **TTS**: Converts LLM text tokens into streaming audio bytes.
@@ -170,7 +170,7 @@ flowchart TD
 | Pipecat Adapter | ✅ |
 | Provider Integration | ✅ |
 | LiveKit Migration | ✅ |
-| Twilio Transport | ✅ |
+| Plivo Telephony Transport | ✅ |
 | TTS Integration | ✅ |
 | Lead Capture & Tools | ✅ |
 | Runtime Validation | ✅ |
@@ -235,7 +235,7 @@ flowchart TD
 ### Transport Configuration
 The pipeline dynamically chooses the transport based on the `TRANSPORT_MODE` environment variable.
 - For WebRTC testing: `TRANSPORT_MODE=livekit`
-- For Telephony: `TRANSPORT_MODE=twilio`
+- For Telephony: `TRANSPORT_MODE=plivo`
 
 ## 11. Environment Variables
 
@@ -243,17 +243,18 @@ The `.env` file must contain the following keys to function properly:
 
 ```env
 # Transport Mode
-TRANSPORT_MODE=livekit  # or twilio
+TRANSPORT_MODE=plivo  # or livekit
 
 # LiveKit (WebRTC)
 LIVEKIT_URL=wss://your-livekit-server.livekit.cloud
 LIVEKIT_API_KEY=your-api-key
 LIVEKIT_API_SECRET=your-api-secret
 
-# Twilio (Telephony)
-TWILIO_ACCOUNT_SID=...
-TWILIO_AUTH_TOKEN=...
-TWILIO_PHONE_NUMBER=...
+# Plivo (Telephony)
+PLIVO_AUTH_ID=...
+PLIVO_AUTH_TOKEN=...
+PLIVO_PHONE_NUMBER=...
+PUBLIC_BASE_URL=https://your-public-url.ngrok-free.dev
 
 # AI Services
 DEEPGRAM_API_KEY=...

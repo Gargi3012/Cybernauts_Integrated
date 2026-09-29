@@ -112,7 +112,7 @@ team_b_app.router.routes = [
     if getattr(r, "path", None) not in conflicting_paths and getattr(r, "name", None) not in ["frontend", "voice_frontend"]
 ]
 
-# Include Team B REST & WebSocket endpoints (/inbound-call, /ws, /api/login, /api/register, /api/livekit/join, /api/twilio/outbound, /ws/frontend)
+# Include Team B REST & WebSocket endpoints (/inbound-call, /plivo/incoming, /ws, /api/login, /api/register, /api/livekit/join, /api/plivo/outbound, /ws/frontend)
 app.include_router(team_b_app.router)
 
 if __name__ == "__main__":

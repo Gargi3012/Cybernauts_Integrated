@@ -9,9 +9,10 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, Query
+from fastapi import BackgroundTasks, FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -120,10 +121,17 @@ def update_stage(stage_code: str, stage_name: str, progress: int, **kwargs):
 
 
 def _run_pipeline_bg(keyword: str):
-    """Background worker for pipeline execution with granular stage updates."""
+    """Background worker for pipeline execution with granular stage updates & telemetry."""
     global pipeline_state
     start_t = time.time()
-    
+    discovery_id = str(uuid.uuid4())[:8]
+
+    def log_telemetry(stage: str, count: int = 0, duration: float = 0.0, error: str = ""):
+        elapsed = round(time.time() - start_t, 2)
+        print(f"[TELEMETRY] discovery_id={discovery_id} timestamp={time.time():.2f} stage={stage} count={count} duration={elapsed}s {f'error={error}' if error else ''}")
+
+    log_telemetry("DISCOVERY_STARTED")
+
     with status_lock:
         pipeline_state.update({
             "status": "running",
@@ -139,40 +147,64 @@ def _run_pipeline_bg(keyword: str):
         })
 
     try:
-        # Step 1: Searching Providers
-        update_stage("SEARCHING", f"Searching Google & providers for '{keyword}'...", 20)
+        # Step 1: Query generation & searching providers
+        log_telemetry("QUERY_GENERATION_STARTED")
+        update_stage("SEARCHING", f"Searching Google & open providers for '{keyword}'...", 20, elapsed_sec=round(time.time() - start_t, 1))
 
         # Import pipeline components
         from main import discover_companies, build_company
         from utils.deadline import Deadline
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import config
+        import utils.stats_tracker as stats
 
         # ── Per-request deadline — isolated from any concurrent request ──────
         run_deadline = Deadline(100.0)
         discovery_deadline = run_deadline.child(40.0)
 
+        log_telemetry("QUERY_GENERATION_COMPLETED")
+        log_telemetry("SEARCH_STARTED")
+
         # Step 2: Company Discovery
-        update_stage("DISCOVERING", "Discovering and scoring company candidates...", 40)
+        update_stage("DISCOVERING", "Discovering and scoring company candidates...", 40, elapsed_sec=round(time.time() - start_t, 1))
         companies = discover_companies(keyword, deadline=discovery_deadline)
         found_count = len(companies) if companies else 0
+
+        log_telemetry("SEARCH_COMPLETED", count=found_count)
+        log_telemetry("CANDIDATES_EXTRACTED", count=found_count)
+
+        if not companies:
+            elapsed = round(time.time() - start_t, 1)
+            # Check if all search providers failed or were exhausted
+            st = stats.get() or {}
+            q_exec = st.get("queries_executed", 0)
+            p_fails = st.get("provider_failures", 0)
+            if q_exec > 0 and p_fails >= q_exec:
+                err_msg = "Discovery failed: All search providers were exhausted or rate-limited."
+                log_telemetry("DISCOVERY_FAILED", error=err_msg, duration=elapsed)
+                print(f"[API Pipeline Error] {err_msg}")
+                update_stage("ERROR", err_msg, 100, status="error", error_message=err_msg, elapsed_sec=elapsed)
+                return
+
+            log_telemetry("DISCOVERY_COMPLETED", count=0, duration=elapsed)
+            update_stage("COMPLETED", "Search completed — 0 candidates found for these criteria.", 100, status="completed", elapsed_sec=elapsed)
+            return
 
         update_stage(
             "CRAWLING",
             f"Found {found_count} candidates. Crawling homepages & extracting data...",
             60,
-            companies_found=found_count
+            companies_found=found_count,
+            elapsed_sec=round(time.time() - start_t, 1)
         )
-
-        if not companies:
-            update_stage("COMPLETED", "Search completed — 0 candidates found.", 100, status="completed")
-            return
+        log_telemetry("CRAWL_STARTED", count=found_count)
 
         # Step 3: Extraction & Lead Card Construction
         leads = []
         max_workers = getattr(config, "MAX_CRAWL_WORKERS", 4)
 
-        update_stage("EXTRACTING", f"Extracting contact & tech data using {max_workers} workers...", 75)
+        update_stage("EXTRACTING", f"Extracting contact & tech data using {max_workers} workers...", 75, elapsed_sec=round(time.time() - start_t, 1))
+        log_telemetry("EXTRACTION_STARTED", count=found_count)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -184,16 +216,24 @@ def _run_pipeline_bg(keyword: str):
                     lead = future.result()
                     if lead is not None:
                         leads.append(lead)
+                        log_telemetry("LEAD_RECORD_CREATED", count=len(leads))
                         with status_lock:
                             pipeline_state["leads_generated"] = len(leads)
+                            pipeline_state["elapsed_sec"] = round(time.time() - start_t, 1)
                 except Exception as exc:
                     print(f"[API Pipeline Error] Error building lead card: {exc}")
 
+        log_telemetry("CRAWL_COMPLETED", count=len(leads))
+        log_telemetry("EXTRACTION_COMPLETED", count=len(leads))
+
         # Step 4: Finalizing & Saving to SQLite DB
-        update_stage("SAVING", f"Finalizing {len(leads)} rich lead cards into database...", 90)
+        elapsed_saving = round(time.time() - start_t, 1)
+        update_stage("SAVING", f"Finalizing {len(leads)} rich lead cards into database...", 90, elapsed_sec=elapsed_saving)
         _save_leads_to_db(leads, keyword)
-        
-        elapsed = round(time.time() - start_t, 2)
+        log_telemetry("LEAD_PERSISTED", count=len(leads))
+
+        elapsed = round(time.time() - start_t, 1)
+        log_telemetry("DISCOVERY_COMPLETED", count=len(leads), duration=elapsed)
         update_stage(
             "COMPLETED",
             f"Successfully generated {len(leads)} lead cards in {elapsed}s",
@@ -203,7 +243,8 @@ def _run_pipeline_bg(keyword: str):
         )
 
     except Exception as e:
-        elapsed = round(time.time() - start_t, 2)
+        elapsed = round(time.time() - start_t, 1)
+        log_telemetry("DISCOVERY_FAILED", error=str(e), duration=elapsed)
         print(f"[API Pipeline Error] {e}")
         with status_lock:
             pipeline_state.update({
@@ -436,6 +477,138 @@ def get_categories():
             if cat and cat != "Unknown":
                 categories[cat] = categories.get(cat, 0) + 1
     return {"categories": categories}
+
+
+@app.post("/api/leads/{identifier}/dispatch-call", summary="Dispatch Outbound Qualification Call via Plivo")
+async def dispatch_lead_call(
+    identifier: str,
+    payload: Optional[dict] = None,
+):
+    """
+    Final Integration Endpoint (Team A → Team B Outbound Dispatch):
+    Validates lead and phone, checks idempotency, packages canonical company context,
+    initiates Plivo outbound call, and updates flowiz_leads.
+    """
+    import re
+    import uuid
+    import asyncio
+
+    repo = LeadRepository(DB_PATH)
+    lead = repo.get_lead_by_id_or_domain(identifier)
+    if not lead:
+        raise HTTPException(status_code=404, detail=f"Lead not found for identifier '{identifier}'")
+
+    # Determine target phone number
+    target_phone = None
+    if payload and isinstance(payload, dict):
+        target_phone = payload.get("phoneNumber") or payload.get("phone_number")
+        
+    if not target_phone:
+        if lead.phones:
+            target_phone = lead.phones[0]
+        elif lead.verified_phones:
+            target_phone = lead.verified_phones[0]
+
+    if not target_phone:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Lead '{lead.company_name}' does not have any callable phone numbers recorded."
+        )
+
+    # Sanitize and validate target phone (E.164 or numeric string)
+    clean_phone = re.sub(r"[^\d+]", "", str(target_phone))
+    if not clean_phone.startswith("+"):
+        if len(clean_phone) == 10:
+            clean_phone = "+91" + clean_phone
+        else:
+            clean_phone = "+" + clean_phone
+
+    if not re.match(r"^\+[1-9]\d{7,14}$", clean_phone):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Target phone number '{target_phone}' (cleaned: '{clean_phone}') is not a valid international phone format."
+        )
+
+    force = bool(payload.get("force", False)) if (payload and isinstance(payload, dict)) else False
+    custom_dispatch_id = payload.get("dispatch_id") if (payload and isinstance(payload, dict)) else None
+    dispatch_id = custom_dispatch_id or f"disp_{uuid.uuid4().hex[:12]}"
+    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+
+    # Idempotency Check: Prevent duplicate active calls
+    if not force and lead.call_status in ["initiating", "initiated", "ringing", "in_progress"]:
+        return {
+            "status": "in_progress",
+            "message": f"Lead '{lead.company_name}' already has an active qualification call ({lead.call_status}).",
+            "lead_id": lead.domain,
+            "provider_call_id": lead.provider_call_id,
+            "call_status": lead.call_status,
+            "session_id": lead.session_id,
+            "dispatch_id": dispatch_id,
+        }
+
+    # Mark as initiating
+    repo.update_lead_qualification(lead.domain, {
+        "call_status": "initiating",
+        "qualification_status": "in_progress",
+        "qualification_score": 0,
+        "session_id": session_id,
+    })
+
+    # Package isolated and sanitized Company Context
+    company_context = {
+        "lead_id": str(lead.domain),
+        "company_name": lead.company_name,
+        "domain": lead.domain or lead.website,
+        "industry": lead.industry,
+        "location": lead.location,
+        "tech_stack": lead.tech_stack,
+        "company_summary": lead.description,
+        "contact_name": lead.people[0].name if lead.people else "",
+        "contact_title": lead.people[0].designation if lead.people else "",
+        "lead_score": lead.lead_score or 0,
+        "lead_quality": lead.lead_quality or "",
+    }
+    context_str = json.dumps(company_context)
+
+    # Invoke Team B's Plivo outbound calling layer
+    try:
+        from Pillar_2.outbound_call import place_outbound_call
+        call_id = await asyncio.to_thread(
+            place_outbound_call,
+            clean_phone,
+            company_context=context_str,
+            lead_id=str(lead.domain),
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+        )
+    except Exception as e:
+        # Revert call status on failure
+        repo.update_lead_qualification(lead.domain, {
+            "call_status": "failed",
+            "qualification_status": "failed",
+            "conversation_summary": f"Dispatch failed: {str(e)}",
+            "session_id": session_id,
+        })
+        raise HTTPException(status_code=500, detail=f"Plivo outbound dispatch failed: {str(e)}")
+
+    # Update flowiz_leads with call ID, session ID, and status
+    repo.update_lead_qualification(lead.domain, {
+        "call_status": "initiated",
+        "qualification_status": "in_progress",
+        "provider_call_id": call_id,
+        "session_id": session_id,
+    })
+
+    return {
+        "status": "success",
+        "dispatch_id": dispatch_id,
+        "session_id": session_id,
+        "lead_id": lead.domain,
+        "provider": "plivo",
+        "provider_call_id": call_id,
+        "target_phone": clean_phone,
+        "company_context": company_context,
+    }
 
 
 

@@ -8,10 +8,30 @@ LEADS_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
 
 _leads_lock = asyncio.Lock()
 
+def _normalize_phone(phone: str) -> str:
+    """Normalize an Indian phone number to exactly 10 digits.
+    
+    Strips common prefixes spoken by users:
+    - +91XXXXXXXXXX  → XXXXXXXXXX  (12 chars with +)
+    - 91XXXXXXXXXX   → XXXXXXXXXX  (12 digits)
+    - 0XXXXXXXXXX    → XXXXXXXXXX  (11 digits, landline-style)
+    """
+    import re
+    digits = re.sub(r'\D', '', phone)
+    # Strip +91 / 91 country-code prefix (leaves 10 digits for Indian mobile)
+    if len(digits) == 12 and digits.startswith('91'):
+        digits = digits[2:]
+    # Strip leading STD trunk '0' (e.g., 07012345678 → 7012345678)
+    elif len(digits) == 11 and digits.startswith('0'):
+        digits = digits[1:]
+    return digits
+
+
 async def save_lead(params, name: str, phone: str, project_details: str = ""):
     """Save the caller's lead details (Name, Phone number, and project requirements) to the database.
     
-    This tool should ONLY be called after the user has explicitly provided both their name and phone number.
+    This tool should ONLY be called after the user has explicitly provided both their name and phone number
+    AND you have read the phone number back to them and they have CONFIRMED it is correct.
     Do NOT call this tool with placeholder data.
     
     Args:
@@ -20,25 +40,43 @@ async def save_lead(params, name: str, phone: str, project_details: str = ""):
         project_details (str): Summary of what the user wants to build or their project requirements.
     """
     import re
-    # Extract only digits from the provided phone string
-    digits = re.sub(r'\D', '', phone)
-    
-    if len(digits) != 10:
-        logger.warning(f"ACTIONABLE AI: 'save_lead' failed validation! Phone '{phone}' has {len(digits)} digits (expected 10).")
+
+    # --- Name validation ---
+    clean_name = (name or "").strip()
+    if len(clean_name) < 2:
+        logger.warning(f"ACTIONABLE AI: 'save_lead' failed validation! Name '{name}' is too short.")
         if getattr(params, "result_callback", None):
             await params.result_callback({
-                "status": "error", 
-                "message": f"Validation Failed: The provided phone number '{phone}' is not a 10-digit number. You MUST tell the user that the number is not 10 digits and explicitly ask them to re-speak their 10-digit phone number."
+                "status": "error",
+                "message": "Validation Failed: The name provided is missing or too short. Please ask the user to clearly state their full name."
             })
         return
 
-    # Hash or mask PII in logs
+    # --- Phone normalization & validation ---
+    digits = _normalize_phone(phone)
+
+    if len(digits) != 10:
+        logger.warning(f"ACTIONABLE AI: 'save_lead' failed validation! Phone '{phone}' normalized to '{digits}' ({len(digits)} digits, expected 10).")
+        if getattr(params, "result_callback", None):
+            await params.result_callback({
+                "status": "error",
+                "message": (
+                    f"Validation Failed: The phone number '{phone}' is invalid — it normalized to {len(digits)} digits "
+                    f"but Indian mobile numbers must be exactly 10 digits. "
+                    f"Tell the user: 'I'm sorry, that doesn't seem like a valid 10-digit Indian mobile number. "
+                    f"Could you please say your number digit by digit?' Then try again after they confirm."
+                )
+            })
+        return
+
+    # Hash or mask PII in logs — use the normalized digits for storage
+    phone = digits  # persist only the clean 10-digit value
     masked_phone = f"{phone[:3]}******{phone[-4:]}" if len(phone) > 7 else "***"
-    logger.info(f"ACTIONABLE AI: Triggered 'save_lead' tool! Name: {name[:2]}***, Phone: {masked_phone}, Project: {project_details}")
+    logger.info(f"ACTIONABLE AI: Triggered 'save_lead' tool! Name: {clean_name[:2]}***, Phone: {masked_phone}, Project: {project_details}")
     
     lead_entry = {
         "timestamp": datetime.now().isoformat(),
-        "name": name,
+        "name": clean_name,
         "phone": phone,
         "project_details": project_details
     }

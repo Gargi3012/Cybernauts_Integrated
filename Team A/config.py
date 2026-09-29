@@ -252,4 +252,17 @@ HUNTER_ENABLED = os.getenv("HUNTER_ENABLED", "false").lower() in ("true", "1")
 # Max total search tasks budget across all lanes
 MAX_TOTAL_SEARCH_BUDGET = int(os.getenv("MAX_TOTAL_SEARCH_BUDGET", "25"))
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Search Provider Fallback Mode
+# ─────────────────────────────────────────────────────────────────────────────
+FALLBACK_MODE: bool = False
+FALLBACK_REASON: str = ""
+
+def activate_fallback_mode(reason: str = "") -> None:
+    """Activate fallback mode across search providers."""
+    global FALLBACK_MODE, FALLBACK_REASON
+    FALLBACK_MODE = True
+    FALLBACK_REASON = reason
+
+
 

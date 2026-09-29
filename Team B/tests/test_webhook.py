@@ -5,4 +5,7 @@ data = {
     "To": "+917082968702",
     "From": "+18303546921"
 }
-# We skip the Twilio signature check for local testing? Wait, handle_inbound_call has Twilio Signature Validation!
+# Test Plivo answer XML webhook endpoint
+response = requests.post(url, data=data)
+print("Status:", response.status_code)
+print("XML:\n", response.text)

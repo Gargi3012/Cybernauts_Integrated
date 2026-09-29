@@ -58,6 +58,8 @@ class ConversationState(Enum):
     GENERATING_AUDIO = "generating_audio"
     SPEAKING = "speaking"
     INTERRUPTED = "interrupted"
+    ENDING_CALL = "ending_call"   # Graceful teardown: final TTS in-flight, new turns blocked
+    PHONE_CAPTURE = "phone_capture"  # Accumulating multi-turn phone digits
     ERROR = "error"
     CLOSED = "closed"
 
@@ -85,6 +87,7 @@ _PROCESSING_STATES: FrozenSet[ConversationState] = frozenset({
     ConversationState.GENERATING_RESPONSE,
     ConversationState.GENERATING_AUDIO,
     ConversationState.SPEAKING,
+    ConversationState.PHONE_CAPTURE,
 })
 
 # ──────────────────────────────────────────────────────────────────────
@@ -102,12 +105,14 @@ TRANSITION_MAP: Dict[ConversationState, FrozenSet[ConversationState]] = {
         ConversationState.GENERATING_RESPONSE, # LLM still streaming chunks
         ConversationState.GENERATING_AUDIO,    # TTS resuming after a pause
         ConversationState.SPEAKING,            # Allowed for initial AI greetings & resumption after interruption
+        ConversationState.PHONE_CAPTURE,       # Starting digit-by-digit phone collection
         ConversationState.INTERRUPTED,
         ConversationState.ERROR,
         ConversationState.CLOSED,
     }),
     ConversationState.TRANSCRIBING: frozenset({
         ConversationState.THINKING,
+        ConversationState.PHONE_CAPTURE,    # Enter phone collection mode
         ConversationState.INTERRUPTED,
         ConversationState.ERROR,
         ConversationState.CLOSED,
@@ -141,9 +146,20 @@ TRANSITION_MAP: Dict[ConversationState, FrozenSet[ConversationState]] = {
         ConversationState.TRANSCRIBING,     # User barged in
         ConversationState.INTERRUPTED,
         ConversationState.IDLE,
+        ConversationState.ENDING_CALL,      # Graceful goodbye sequence started
         ConversationState.ERROR,
         ConversationState.CLOSED,
         ConversationState.GENERATING_AUDIO, # LLM response finishes after TTS started
+    }),
+    ConversationState.PHONE_CAPTURE: frozenset({
+        ConversationState.LISTENING,        # Exit collection mode
+        ConversationState.THINKING,         # Enough digits collected
+        ConversationState.INTERRUPTED,
+        ConversationState.ERROR,
+        ConversationState.CLOSED,
+    }),
+    ConversationState.ENDING_CALL: frozenset({
+        ConversationState.CLOSED,           # Pipeline terminates after final TTS
     }),
     ConversationState.INTERRUPTED: frozenset({
         ConversationState.LISTENING,

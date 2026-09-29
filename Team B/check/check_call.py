@@ -1,14 +1,19 @@
 import os
 import json
-from twilio.rest import Client
+import plivo
 from dotenv import load_dotenv
-import requests
 
 load_dotenv()
-account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
-auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
-call_sid = "CAd56b9f64e7d34f8f5a9a80d289c15122"
+auth_id = os.environ.get('PLIVO_AUTH_ID')
+auth_token = os.environ.get('PLIVO_AUTH_TOKEN')
+call_uuid = os.environ.get('PLIVO_CALL_UUID', 'test_uuid')
 
-url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Calls/{call_sid}/Events.json"
-response = requests.get(url, auth=(account_sid, auth_token))
-print(json.dumps(response.json(), indent=2))
+if auth_id and auth_token and not auth_id.startswith('dummy_'):
+    client = plivo.RestClient(auth_id, auth_token)
+    try:
+        call = client.calls.get(call_uuid)
+        print(call)
+    except Exception as e:
+        print(f"Plivo call status: {e}")
+else:
+    print("Set PLIVO_AUTH_ID and PLIVO_AUTH_TOKEN in .env to query Plivo call status.")

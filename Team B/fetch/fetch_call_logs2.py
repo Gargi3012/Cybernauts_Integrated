@@ -1,14 +1,19 @@
 import os
-from twilio.rest import Client
+import plivo
 from dotenv import load_dotenv
 import pprint
 
 load_dotenv()
-client = Client(os.environ['TWILIO_ACCOUNT_SID'], os.environ['TWILIO_AUTH_TOKEN'])
-sid = 'CAcc48ad786717085634eddcf9c1733ee0'
-call = client.calls(sid).fetch()
+auth_id = os.environ.get('PLIVO_AUTH_ID', '')
+auth_token = os.environ.get('PLIVO_AUTH_TOKEN', '')
+uuid = os.environ.get('PLIVO_CALL_UUID', 'test_uuid')
 
-call_dict = call.__dict__
-# Remove auth tokens or client objects if present
-safe_dict = {k: v for k, v in call_dict.items() if not k.startswith('_')}
-pprint.pprint(safe_dict)
+if auth_id and auth_token and not auth_id.startswith('dummy_'):
+    client = plivo.RestClient(auth_id, auth_token)
+    try:
+        call = client.calls.get(uuid)
+        pprint.pprint(call.__dict__)
+    except Exception as e:
+        print(f"Error: {e}")
+else:
+    print("Set PLIVO_AUTH_ID and PLIVO_AUTH_TOKEN in .env.")

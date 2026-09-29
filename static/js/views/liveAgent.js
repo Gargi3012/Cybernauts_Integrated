@@ -1,36 +1,36 @@
 /**
- * Voice Agent — Live Agent View
- * Features:
- * 1. Real-time LiveKit WebRTC Voice connection (Mic -> LiveKit -> Pipecat STT/LLM/TTS -> Speaker)
- * 2. WebSocket (/ws/frontend) transcript & pipeline event streaming
- * 3. Structured end-to-end debug logging ([1] through [18])
- * 4. Microphones & Remote Audio Track Subscription (AudioContext auto-resume & element playback)
- * 5. Strict state machine (DISCONNECTED -> CONNECTING -> CONNECTED -> ERROR) with cleanup
- * 6. Single source of truth for AI greeting & transcript accumulation
+ * Voice Agent — Live Interactive Console View
+ * Dual-Mode Voice Console:
+ * 1. Telephony Outbound (Plivo PSTN with Lead Traceability)
+ * 2. WebRTC Live Voice (LiveKit in-browser mic session)
+ * Powered by real-time WebSocket (/ws/frontend) event streaming
  */
 
 class LiveAgentView {
   constructor() {
-    this.activeMode = 'livekit'; // 'livekit' | 'telephony'
+    this.activeMode = 'telephony'; // 'telephony' (Plivo) or 'livekit' (WebRTC)
     this.room = null;
     this.ws = null;
     this.isWsConnected = false;
+    this.callTimer = null;
+    this.callElapsedSec = 0;
     this.initWebSocket();
   }
 
   initWebSocket() {
-    if (this.ws) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
 
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProto}//${window.location.host}/ws/frontend`;
     
-    console.log(`[WS INIT] Connecting to control WebSocket: ${wsUrl}`);
     try {
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('[WS CONNECTED] Control WebSocket connected successfully.');
         this.isWsConnected = true;
+        this.updateConnectionStatus(true);
       };
 
       this.ws.onmessage = (event) => {
@@ -43,548 +43,515 @@ class LiveAgentView {
       };
 
       this.ws.onclose = () => {
-        console.log('[WS CLOSED] Control WebSocket disconnected. Will retry in 3s...');
         this.isWsConnected = false;
+        this.updateConnectionStatus(false);
         this.ws = null;
         setTimeout(() => this.initWebSocket(), 3000);
       };
 
       this.ws.onerror = (err) => {
-        console.error('[WS ERROR] Control WebSocket error:', err);
+        this.isWsConnected = false;
+        this.updateConnectionStatus(false);
       };
     } catch (err) {
       console.error('[WS EXCEPTION] Exception initializing WebSocket:', err);
     }
   }
 
+  updateConnectionStatus(connected) {
+    const pill = document.getElementById('wsConnectionPill');
+    if (pill) {
+      if (connected) {
+        pill.innerHTML = '<span class="status-indicator" style="background:#16a34a;"></span><span>WebSocket Connected</span>';
+        pill.className = 'status-pill status-online';
+      } else {
+        pill.innerHTML = '<span class="status-indicator" style="background:#d97706;"></span><span>Reconnecting...</span>';
+        pill.className = 'status-pill status-warning';
+      }
+    }
+  }
+
   handleBackendEvent(data) {
-    console.log('[WS EVENT RECEIVED]', data);
     const container = document.getElementById('viewContainer');
 
     switch (data.event) {
       case 'greeting_started':
-        console.log('[GREETING STARTED] Agent is speaking greeting...');
-        window.store.setVoiceState({ statusMessage: 'Greeting playing...' });
+        window.store.setVoiceState({
+          speakerState: 'ai_speaking',
+          statusMessage: 'AI greeting prospect...'
+        });
         if (container && window.store.currentView === 'liveAgent') this.render(container);
         break;
 
       case 'greeting_complete':
-        console.log('[GREETING COMPLETE] Agent greeting completed.');
-        window.store.setVoiceState({ statusMessage: 'Ready for input' });
+        window.store.setVoiceState({
+          speakerState: 'idle',
+          statusMessage: 'Listening for prospect speech...'
+        });
         if (container && window.store.currentView === 'liveAgent') this.render(container);
         break;
 
       case 'transcription_received':
-        console.log('[11] STT receives audio');
-        console.log('[12] STT produces transcript:', data.text);
         if (data.text && data.text.trim()) {
-          window.store.addTranscript('user', data.text.trim());
+          window.store.addTranscript('user', data.text.trim(), {
+            language: data.language || 'English',
+            emotion: data.emotion || 'Neutral',
+            latencyMs: data.latency_ms || null
+          });
           window.store.setVoiceState({
             language: data.language || 'English',
             latencyMs: data.latency_ms || 420,
-            statusMessage: 'Processing STT...'
+            speakerState: 'user_speaking',
+            statusMessage: `Prospect speaking (${data.language || 'Detected'})`
           });
           if (container && window.store.currentView === 'liveAgent') this.render(container);
         }
         break;
 
       case 'llm_response_generating':
-        console.log('[13] LLM receives transcript & generates response...');
-        window.store.setVoiceState({ statusMessage: 'Generating response...' });
+        window.store.setVoiceState({
+          speakerState: 'thinking',
+          statusMessage: 'AI generating response...'
+        });
         if (container && window.store.currentView === 'liveAgent') this.render(container);
         break;
 
       case 'llm_response_complete':
-        console.log('[14] LLM produces response:', data.full_text);
         if (data.full_text && data.full_text.trim()) {
-          window.store.addTranscript('agent', data.full_text.trim());
+          window.store.addTranscript('agent', data.full_text.trim(), {
+            latencyMs: data.latency_ms || null
+          });
           window.store.setVoiceState({
             latencyMs: data.latency_ms || 450,
-            statusMessage: 'Preparing audio...'
+            statusMessage: 'Synthesizing voice audio...'
           });
           if (container && window.store.currentView === 'liveAgent') this.render(container);
         }
         break;
 
       case 'tts_playing':
-        console.log('[15] TTS generates audio');
-        console.log('[16] Agent publishes audio');
         window.store.setVoiceState({
+          speakerState: 'ai_speaking',
           latencyMs: data.latency_ms || data.duration_ms || 400,
-          statusMessage: 'Bot speaking...'
+          statusMessage: 'AI speaking...'
         });
         if (container && window.store.currentView === 'liveAgent') this.render(container);
         break;
 
       case 'tts_complete':
-        window.store.setVoiceState({ statusMessage: 'Ready for input' });
+        window.store.setVoiceState({
+          speakerState: 'idle',
+          statusMessage: 'Listening for prospect...'
+        });
         if (container && window.store.currentView === 'liveAgent') this.render(container);
         break;
 
+      case 'lead_qualification_completed':
+        // Real qualification result from backend
+        if (data.lead_id && data.qualification) {
+          window.store.updateLeadQualification(data.lead_id, data.qualification);
+          window.store.updateActiveCall({
+            call_status: 'completed',
+            qualification: data.qualification
+          });
+          window.store.setVoiceState({
+            isCallActive: false,
+            speakerState: 'idle',
+            statusMessage: 'Call completed. Qualification evaluated.'
+          });
+          this.stopCallTimer();
+          if (container && window.store.currentView === 'liveAgent') this.render(container);
+        }
+        break;
+
       case 'session_analytics':
-        console.log('[SESSION ANALYTICS]', data);
         if (data.summary) {
-          window.store.addTranscript('system', `Overall Emotion: ${data.overall_emotion || 'Neutral'} | Summary: ${data.summary}`);
+          window.store.addTranscript('system', `Session Closed. Summary: ${data.summary}`);
           if (container && window.store.currentView === 'liveAgent') this.render(container);
         }
         break;
 
       case 'error':
-        console.error('[PIPELINE ERROR]', data.error_message);
-        window.store.setVoiceState({ statusMessage: `Error: ${data.error_message}` });
+        window.store.setVoiceState({
+          statusMessage: `Pipeline notice: ${data.error_message}`
+        });
         if (container && window.store.currentView === 'liveAgent') this.render(container);
         break;
     }
   }
 
+  startCallTimer() {
+    this.stopCallTimer();
+    this.callElapsedSec = 0;
+    this.callTimer = setInterval(() => {
+      this.callElapsedSec++;
+      const timerEl = document.getElementById('liveCallDuration');
+      if (timerEl) {
+        const mins = String(Math.floor(this.callElapsedSec / 60)).padStart(2, '0');
+        const secs = String(this.callElapsedSec % 60).padStart(2, '0');
+        timerEl.innerText = `${mins}:${secs}`;
+      }
+    }, 1000);
+  }
+
+  stopCallTimer() {
+    if (this.callTimer) {
+      clearInterval(this.callTimer);
+      this.callTimer = null;
+    }
+  }
+
   render(container) {
-    const liveState = window.store.voiceState.livekitState || 'DISCONNECTED'; // DISCONNECTED, CONNECTING, CONNECTED, ERROR
-    const transcripts = window.store.voiceState.transcripts || [];
-    const statusMsg = window.store.voiceState.statusMessage || (liveState === 'CONNECTED' ? 'Microphone active. Streaming bidirectional audio.' : 'Disconnected');
-    const latencyVal = window.store.voiceState.latencyMs ? `${window.store.voiceState.latencyMs}ms` : (liveState === 'CONNECTED' ? '420ms' : '—');
-    const langVal = window.store.voiceState.language || 'English';
+    const activeCall = window.store.activeCall;
+    const voiceState = window.store.voiceState;
+    const transcripts = voiceState.transcripts || [];
+    const speakerState = voiceState.speakerState || 'idle';
+    const statusMsg = voiceState.statusMessage || 'Console Ready';
+    const latencyVal = voiceState.latencyMs ? `${voiceState.latencyMs}ms` : '—';
+    const langVal = voiceState.language || 'English / Hindi';
 
     container.innerHTML = `
-      <div style="margin-bottom: 24px;">
-        <h2 style="font-size: 20px; font-weight: 700; margin: 0 0 6px 0;">AI Voice Agent</h2>
-        <div style="color: var(--text-muted); font-size: 13.5px;">
-          Interactive real-time voice assistant supporting WebRTC browser conversations and telephony dialing.
+      <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h1 style="font-size: 22px; font-weight: 800; margin: 0 0 6px 0; color: var(--text-primary);">AI Voice Agent Console</h1>
+          <div style="color: var(--text-muted); font-size: 13.5px;">
+            Real-time conversational pipeline monitoring, live transcript streaming, and bilingual prospect qualification.
+          </div>
+        </div>
+        <div id="wsConnectionPill" class="status-pill ${this.isWsConnected ? 'status-online' : 'status-warning'}">
+          <span class="status-indicator" style="background: ${this.isWsConnected ? '#16a34a' : '#d97706'};"></span>
+          <span>${this.isWsConnected ? 'WebSocket Connected' : 'Connecting...'}</span>
         </div>
       </div>
 
-      <!-- Mode Selector Segmented Tabs -->
-      <div style="margin-bottom: 24px;">
+      <!-- Mode Selector Tabs -->
+      <div style="margin-bottom: 20px;">
         <div class="segmented-control">
-          <button class="segmented-tab ${this.activeMode === 'livekit' ? 'active' : ''}" id="tabModeLiveKit">
-            <i class="fa-solid fa-microphone-lines"></i>
-            <span>LiveKit Web Voice</span>
-          </button>
           <button class="segmented-tab ${this.activeMode === 'telephony' ? 'active' : ''}" id="tabModeTelephony">
             <i class="fa-solid fa-phone"></i>
-            <span>Telephony Outbound</span>
+            <span>Plivo Telephony (PSTN)</span>
+          </button>
+          <button class="segmented-tab ${this.activeMode === 'livekit' ? 'active' : ''}" id="tabModeLiveKit">
+            <i class="fa-solid fa-microphone-lines"></i>
+            <span>LiveKit WebRTC (Browser)</span>
           </button>
         </div>
       </div>
 
-      <!-- MODE 1: LIVEKIT WEB VOICE CONTAINER -->
-      <div id="sectionLiveKitMode" style="display: ${this.activeMode === 'livekit' ? 'block' : 'none'};">
-        <div class="card" style="margin-bottom: 24px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-            <div>
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <span class="status-indicator" style="background: ${
-                  liveState === 'CONNECTED' ? '#16a34a' : liveState === 'CONNECTING' ? '#d97706' : liveState === 'ERROR' ? '#dc2626' : '#94a3b8'
-                };"></span>
-                <span style="font-weight: 600; font-size: 15px;">
-                  ${
-                    liveState === 'CONNECTED' ? 'Connected to Voice Agent' :
-                    liveState === 'CONNECTING' ? 'Connecting to LiveKit Room...' :
-                    liveState === 'ERROR' ? 'Connection Failed' : 'Disconnected'
-                  }
-                </span>
+      <!-- ACTIVE TELEPHONY CALL HERO (IF CALL IS ACTIVE) -->
+      ${activeCall ? `
+        <div class="card" style="margin-bottom: 20px; padding: 20px; border: 1px solid rgba(107, 33, 168, 0.3); background: linear-gradient(180deg, #faf5ff 0%, #ffffff 100%);">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <div style="width: 42px; height: 42px; border-radius: 8px; background: #6b21a8; color: #ffffff; display: flex; align-items: center; justify-content: center; font-size: 18px;">
+                <i class="fa-solid fa-phone-volume ${activeCall.call_status === 'initiated' || activeCall.call_status === 'in_progress' ? 'fa-shake' : ''}"></i>
               </div>
-              <div class="text-muted" style="font-size: 12.5px; margin-top: 4px;">
-                ${
-                  liveState === 'CONNECTED' ? statusMsg :
-                  liveState === 'CONNECTING' ? 'Authenticating token & establishing WebRTC peer connection...' :
-                  liveState === 'ERROR' ? 'Unable to join room. Verify Admin authentication.' :
-                  'Click "Connect to Live Agent" to start a browser voice session.'
-                }
+              <div>
+                <div style="font-weight: 800; font-size: 16px; color: var(--text-primary);">${activeCall.company_name || 'Active Prospect Call'}</div>
+                <div class="font-mono text-muted" style="font-size: 12px;">
+                  Target: <strong>${activeCall.phone}</strong> · Provider: Plivo PSTN
+                </div>
               </div>
             </div>
 
-            <div style="display: flex; gap: 10px; align-items: center;">
-              ${liveState === 'DISCONNECTED' || liveState === 'ERROR' ? `
-                <button id="btnConnectLiveKit" class="btn btn-primary">
-                  <i class="fa-solid fa-plug"></i>
-                  <span>Connect to Live Agent</span>
-                </button>
-              ` : ''}
-
-              ${liveState === 'CONNECTING' ? `
-                <button class="btn btn-primary" disabled>
-                  <i class="fa-solid fa-circle-notch fa-spin"></i>
-                  <span>Connecting...</span>
-                </button>
-              ` : ''}
-
-              ${liveState === 'CONNECTED' ? `
-                <button id="btnMuteLiveKit" class="btn btn-secondary">
-                  <i class="fa-solid fa-microphone-slash"></i>
-                  <span>Mute Mic</span>
-                </button>
-                <button id="btnLeaveLiveKit" class="btn btn-danger">
-                  <i class="fa-solid fa-phone-slash"></i>
-                  <span>End Call / Leave Room</span>
-                </button>
-              ` : ''}
+            <!-- Call State & Timer -->
+            <div style="display: flex; align-items: center; gap: 16px;">
+              <div style="text-align: right;">
+                <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Duration</div>
+                <div class="font-mono" style="font-size: 18px; font-weight: 700; color: var(--text-primary);" id="liveCallDuration">00:00</div>
+              </div>
+              <span class="badge ${activeCall.call_status === 'completed' ? 'badge-success' : 'badge-warning'}" style="font-size: 12px; padding: 6px 12px;">
+                ${activeCall.call_status === 'completed' ? '✓ Call Completed' : '● ' + (activeCall.call_status || 'In Progress')}
+              </span>
             </div>
           </div>
+
+          <!-- Traceability IDs Bar -->
+          <div style="display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 12px; background: rgba(107, 33, 168, 0.05); border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(107, 33, 168, 0.15);" class="font-mono text-muted">
+            <div><strong>Lead:</strong> ${activeCall.lead_id || '—'}</div>
+            <div><strong>Dispatch:</strong> ${activeCall.dispatch_id || '—'}</div>
+            <div><strong>Session:</strong> ${activeCall.session_id || '—'}</div>
+            <div><strong>Call UUID:</strong> ${activeCall.call_uuid || '—'}</div>
+          </div>
+
+          <!-- Completed Qualification Card (if available) -->
+          ${activeCall.qualification ? `
+            <div style="margin-top: 14px; padding: 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <div style="font-weight: 700; color: #065f46; font-size: 14px;">
+                  ✓ AI Qualification Evaluated
+                </div>
+                <span class="badge badge-success" style="font-size: 12px;">Score: ${activeCall.qualification.qualification_score || 0}/100</span>
+              </div>
+              <div style="font-size: 12.5px; color: #047857; margin-bottom: 8px;">
+                ${activeCall.qualification.conversation_summary || 'Outbound qualification concluded successfully.'}
+              </div>
+              <button class="btn btn-secondary btn-sm" id="btnBackToLead" data-domain="${activeCall.lead_id}">
+                <i class="fa-solid fa-address-card"></i> Return to Updated Lead Dossier
+              </button>
+            </div>
+          ` : ''}
         </div>
-      </div>
+      ` : ''}
 
-      <!-- MODE 2: TELEPHONY OUTBOUND CONTAINER -->
-      <div id="sectionTelephonyMode" style="display: ${this.activeMode === 'telephony' ? 'block' : 'none'};">
-        <div class="card" style="margin-bottom: 24px;">
-          <div style="font-weight: 600; font-size: 15px; margin-bottom: 6px;">SIM-Based Outbound Telephony</div>
-          <div class="text-muted" style="font-size: 13px; margin-bottom: 18px;">
-            Trigger an automated outbound phone call using Plivo REST API to connect a recipient to the Pipecat AI agent.
-          </div>
-
-          <div style="display: flex; gap: 12px; max-width: 480px; align-items: center;">
+      <!-- DIALER (WHEN IN TELEPHONY MODE & NO ACTIVE LEAD CALL) -->
+      ${this.activeMode === 'telephony' && !activeCall ? `
+        <div class="card" style="margin-bottom: 20px; padding: 24px;">
+          <h3 style="margin: 0 0 14px 0; font-size: 15px; font-weight: 700;">Manual Outbound Telecom Dialer</h3>
+          <div style="display: flex; gap: 12px; align-items: center; max-width: 480px;">
             <input 
-              type="tel" 
-              id="txtTelephonyNumber" 
-              class="form-input" 
-              placeholder="+91 XXXXX XXXXX" 
-              value="+17372212163" 
+              type="text" 
+              id="txtManualPhone" 
+              class="form-input font-mono" 
+              placeholder="e.g. +917082968702" 
+              value="+917082968702"
+              style="font-size: 15px;"
             />
-            <button id="btnStartTelephonyCall" class="btn btn-primary" style="white-space: nowrap;">
+            <button class="btn btn-primary" id="btnManualDial" style="white-space: nowrap;">
               <i class="fa-solid fa-phone"></i>
-              <span>Start Call</span>
+              <span>Dial via Plivo</span>
             </button>
           </div>
+          <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 8px;">
+            Or launch qualification with full company context directly from any prospect in <a href="#leads" style="color: var(--color-primary); font-weight: 600;">All Leads</a>.
+          </div>
+        </div>
+      ` : ''}
 
-          <div id="telephonyCallNotice" style="margin-top: 14px; font-size: 13px; display: none;"></div>
-        </div>
-      </div>
-
-      <!-- Real Voice Metrics Strip -->
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
-        <div class="card" style="padding: 16px;">
-          <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">ROUNDTRIP LATENCY</div>
-          <div style="font-size: 20px; font-weight: 700; margin-top: 4px;">${latencyVal}</div>
-        </div>
-        <div class="card" style="padding: 16px;">
-          <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">STT LANGUAGE</div>
-          <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">${langVal} (Deepgram/Sarvam)</div>
-        </div>
-        <div class="card" style="padding: 16px;">
-          <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">LLM MODEL</div>
-          <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">Groq Llama-3.3-70b</div>
-        </div>
-        <div class="card" style="padding: 16px;">
-          <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">TTS VOICE</div>
-          <div style="font-size: 14px; font-weight: 600; margin-top: 4px;">Sarvam / Cartesia</div>
-        </div>
-      </div>
-
-      <!-- Live Conversation Transcript -->
-      <div class="card" style="padding: 20px; min-height: 280px; display: flex; flex-direction: column;">
-        <div style="font-weight: 600; font-size: 14px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
-          <span>Live Conversation Transcript</span>
-          <span class="badge ${liveState === 'CONNECTED' ? 'badge-success' : 'badge-muted'}">
-            ${liveState === 'CONNECTED' ? 'Streaming Active' : 'Standby'}
-          </span>
-        </div>
-
-        <div id="transcriptBox" style="flex: 1; background: var(--bg-surface-secondary); border-radius: var(--radius-sm); border: 1px solid var(--border-color); padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; max-height: 360px;">
-          ${liveState === 'DISCONNECTED' && transcripts.length === 0 ? `
-            <div class="text-muted" style="font-size: 13.5px; text-align: center; padding: 48px 0;">
-              Choose a calling method above to start an AI voice conversation.
+      <!-- WEBRTC BROWSER VOICE MODE (IF IN LIVEKIT MODE) -->
+      ${this.activeMode === 'livekit' ? `
+        <div class="card" style="margin-bottom: 20px; padding: 24px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+            <div>
+              <h3 style="margin: 0 0 4px 0; font-size: 16px; font-weight: 700;">In-Browser WebRTC Voice Session</h3>
+              <div class="text-muted" style="font-size: 13px;">Connect your microphone and speak directly with the AI Agent in real-time.</div>
             </div>
-          ` : transcripts.length === 0 ? `
-            <div class="text-muted" style="font-size: 13.5px; text-align: center; padding: 48px 0;">
-              Connection established. Speak into your microphone...
+            <div>
+              <button class="btn btn-primary" id="btnConnectLiveKit">
+                <i class="fa-solid fa-microphone"></i>
+                <span>Connect Live Microphone</span>
+              </button>
             </div>
-          ` : transcripts.map(t => `
-            <div class="transcript-bubble ${t.role === 'user' ? 'user' : t.role === 'system' ? 'system' : 'agent'}">
-              <div style="font-size: 11px; font-weight: 700; margin-bottom: 2px;">${t.role === 'user' ? 'Caller' : t.role === 'system' ? 'System Memory' : 'AI Agent'}</div>
-              <div>${t.text}</div>
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- REAL-TIME CONVERSATION TRANSCRIPT & BARGE-IN CONSOLE -->
+      <div class="card" style="padding: 24px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 14px;">
+          
+          <!-- Barge-in / Speaker State -->
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="status-indicator" style="background: ${
+              speakerState === 'ai_speaking' ? '#8b5cf6' :
+              (speakerState === 'user_speaking' ? '#10b981' :
+              (speakerState === 'thinking' ? '#f59e0b' : '#94a3b8'))
+            };"></span>
+            <div>
+              <div style="font-weight: 700; font-size: 13.5px; color: var(--text-primary);">
+                ${
+                  speakerState === 'ai_speaking' ? '● AI Speaking' :
+                  (speakerState === 'user_speaking' ? '● Prospect Speaking' :
+                  (speakerState === 'thinking' ? '● AI Thinking / Generating...' : '● Idle / Listening'))
+                }
+              </div>
+              <div style="font-size: 11.5px; color: var(--text-muted);">${statusMsg}</div>
             </div>
-          `).join('')}
+          </div>
+
+          <!-- Metadata Chips -->
+          <div style="display: flex; gap: 10px; align-items: center; font-size: 12px;">
+            <span class="badge badge-info font-mono">Lang: ${langVal}</span>
+            <span class="badge badge-neutral font-mono">Latency: ${latencyVal}</span>
+            <button class="btn btn-secondary btn-sm" id="btnClearTranscripts" title="Clear transcript window">
+              <i class="fa-solid fa-trash-can"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Transcript Messages Stream -->
+        <div id="transcriptStreamContainer" style="min-height: 280px; max-height: 440px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px; background: var(--bg-surface-secondary); border-radius: 8px; border: 1px solid var(--border-color);">
+          ${transcripts.length === 0 ? `
+            <div style="margin: auto; text-align: center; color: var(--text-muted); padding: 48px 16px;">
+              <i class="fa-solid fa-comments" style="font-size: 32px; margin-bottom: 10px; opacity: 0.4;"></i>
+              <div style="font-weight: 600; font-size: 14px;">No utterances recorded yet</div>
+              <div style="font-size: 12px; margin-top: 4px;">Transcript messages will stream here in real-time as the call progresses.</div>
+            </div>
+          ` : transcripts.map(t => {
+            const isAgent = t.role === 'agent';
+            const isSystem = t.role === 'system';
+
+            if (isSystem) {
+              return `
+                <div style="align-self: center; font-size: 11.5px; color: var(--text-muted); background: #ffffff; padding: 4px 12px; border-radius: 12px; border: 1px solid var(--border-color);">
+                  <i class="fa-solid fa-circle-info text-accent" style="margin-right: 4px;"></i>${t.text}
+                </div>
+              `;
+            }
+
+            return `
+              <div style="display: flex; flex-direction: column; align-items: ${isAgent ? 'flex-start' : 'flex-end'};">
+                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 11px; color: var(--text-muted);">
+                  <strong>${isAgent ? 'AI Agent' : 'Prospect'}</strong>
+                  ${t.language ? `<span class="badge badge-neutral" style="font-size: 9px; padding: 1px 4px;">${t.language}</span>` : ''}
+                  ${t.emotion ? `<span class="badge badge-neutral" style="font-size: 9px; padding: 1px 4px;">${t.emotion}</span>` : ''}
+                  <span>${t.timestamp || ''}</span>
+                </div>
+                <div style="max-width: 80%; padding: 10px 14px; border-radius: ${isAgent ? '4px 14px 14px 14px' : '14px 4px 14px 14px'}; font-size: 13.5px; line-height: 1.45; ${
+                  isAgent 
+                    ? 'background: #f5f3ff; color: #4c1d95; border: 1px solid #ddd6fe;' 
+                    : 'background: #ffffff; color: var(--text-primary); border: 1px solid var(--border-color); box-shadow: var(--shadow-sm);'
+                }">
+                  ${t.text}
+                </div>
+              </div>
+            `;
+          }).join('')}
         </div>
       </div>
     `;
 
     this.attachEvents(container);
 
-    // Auto scroll transcript box
-    const box = container.querySelector('#transcriptBox');
-    if (box) box.scrollTop = box.scrollHeight;
+    // Auto-scroll transcript container to bottom
+    const stream = container.querySelector('#transcriptStreamContainer');
+    if (stream) {
+      stream.scrollTop = stream.scrollHeight;
+    }
   }
 
   attachEvents(container) {
-    // Mode Switcher Tabs
-    const tabLiveKit = container.querySelector('#tabModeLiveKit');
+    // Mode toggles
     const tabTelephony = container.querySelector('#tabModeTelephony');
-
-    if (tabLiveKit && tabTelephony) {
-      tabLiveKit.addEventListener('click', () => {
-        this.activeMode = 'livekit';
-        this.render(container);
-      });
+    if (tabTelephony) {
       tabTelephony.addEventListener('click', () => {
         this.activeMode = 'telephony';
         this.render(container);
       });
     }
 
-    // Connect LiveKit Action
-    const btnConnect = container.querySelector('#btnConnectLiveKit');
-    if (btnConnect) {
-      btnConnect.addEventListener('click', async () => {
-        await this.connectLiveKit(container);
+    const tabLiveKit = container.querySelector('#tabModeLiveKit');
+    if (tabLiveKit) {
+      tabLiveKit.addEventListener('click', () => {
+        this.activeMode = 'livekit';
+        this.render(container);
       });
     }
 
-    // End/Leave Room Action
-    const btnLeave = container.querySelector('#btnLeaveLiveKit');
-    if (btnLeave) {
-      btnLeave.addEventListener('click', async () => {
-        await this.leaveLiveKit(container);
-      });
-    }
-
-    // Mute/Unmute Mic
-    const btnMute = container.querySelector('#btnMuteLiveKit');
-    if (btnMute) {
-      btnMute.addEventListener('click', async () => {
-        if (this.room && this.room.localParticipant) {
-          const isMuted = !this.room.localParticipant.isMicrophoneEnabled;
-          await this.room.localParticipant.setMicrophoneEnabled(isMuted);
-          btnMute.innerHTML = isMuted ? 
-            `<i class="fa-solid fa-microphone-slash"></i><span>Mute Mic</span>` : 
-            `<i class="fa-solid fa-microphone"></i><span>Unmute Mic</span>`;
-        }
-      });
-    }
-
-    // Telephony Outbound Action
-    const btnStartTelephony = container.querySelector('#btnStartTelephonyCall');
-    const txtNumber = container.querySelector('#txtTelephonyNumber');
-    const callNotice = container.querySelector('#telephonyCallNotice');
-
-    if (btnStartTelephony && txtNumber) {
-      btnStartTelephony.addEventListener('click', async () => {
-        const phone = txtNumber.value.trim();
+    // Manual dial
+    const btnDial = container.querySelector('#btnManualDial');
+    const txtPhone = container.querySelector('#txtManualPhone');
+    if (btnDial && txtPhone) {
+      btnDial.addEventListener('click', async () => {
+        const phone = txtPhone.value.trim();
         if (!phone) {
-          alert("Please enter a phone number.");
+          alert('Please enter a phone number in E.164 format (e.g. +917082968702).');
           return;
         }
 
         try {
-          btnStartTelephony.disabled = true;
-          if (callNotice) {
-            callNotice.style.display = 'block';
-            callNotice.className = 'text-muted';
-            callNotice.innerText = 'Initiating telephony outbound call...';
-          }
+          btnDial.disabled = true;
+          btnDial.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Dialing...</span>';
 
-          const res = await window.api.triggerOutboundCall(phone);
-          if (res && res.status === 'success') {
-            if (callNotice) {
-              callNotice.className = 'badge badge-success';
-              const prov = res.provider ? (res.provider.charAt(0).toUpperCase() + res.provider.slice(1)) : 'Plivo';
-              callNotice.innerText = `Call Initiated via ${prov}! UUID: ${res.callSid}`;
+          // Check if dialed phone matches a known lead
+          const matchingLead = (window.store.allLeads || []).find(l => 
+            Array.isArray(l.phones) && l.phones.some(p => p.replace(/[^\d]/g, '').endsWith(phone.replace(/[^\d]/g, '').slice(-10)))
+          );
+
+          const leadId = matchingLead ? (matchingLead.domain || matchingLead.website) : 'manual_dial';
+          const companyName = matchingLead ? matchingLead.company_name : 'Manual Telecom Call';
+
+          window.store.setActiveCall({
+            lead_id: leadId,
+            dispatch_id: 'manual_' + Date.now(),
+            session_id: 'sess_' + Date.now(),
+            call_uuid: 'pending',
+            company_name: companyName,
+            phone: phone,
+            call_status: 'initiating'
+          });
+
+          this.startCallTimer();
+
+          const extraPayload = matchingLead ? {
+            lead_id: leadId,
+            company_context: {
+              lead_id: leadId,
+              company_name: matchingLead.company_name,
+              domain: matchingLead.domain || matchingLead.website,
+              industry: matchingLead.industry,
+              location: matchingLead.location,
+              company_summary: matchingLead.description
             }
+          } : {};
+
+          const res = await window.api.triggerOutboundCall(phone, extraPayload);
+          if (res && res.status === 'success') {
+            window.store.updateActiveCall({
+              call_status: 'in_progress',
+              call_uuid: res.callSid || res.call_id
+            });
+            this.render(container);
           }
         } catch (err) {
-          if (callNotice) {
-            callNotice.className = 'badge badge-error';
-            callNotice.innerText = `Call Failed: ${err.message || err}`;
-          }
+          alert('Failed to place outbound call: ' + (err.message || err));
+          window.store.clearActiveCall();
+          this.stopCallTimer();
+          this.render(container);
         } finally {
-          btnStartTelephony.disabled = false;
+          btnDial.disabled = false;
+          btnDial.innerHTML = '<i class="fa-solid fa-phone"></i><span>Dial via Plivo</span>';
         }
       });
     }
-  }
 
-  async connectLiveKit(container) {
-    console.log("[1] Connect clicked");
-    window.store.setVoiceState({ livekitState: 'CONNECTING', statusMessage: 'Connecting...' });
-    this.render(container);
+    // Clear transcripts
+    const btnClear = container.querySelector('#btnClearTranscripts');
+    if (btnClear) {
+      btnClear.addEventListener('click', () => {
+        window.store.clearTranscripts();
+        this.render(container);
+      });
+    }
 
-    try {
-      // Step 2: Check Admin JWT Auth
-      let jwtToken = localStorage.getItem('jwt_token');
-      if (jwtToken) {
-        try {
-          const payload = JSON.parse(atob(jwtToken.split('.')[1]));
-          if ((payload.exp * 1000) < Date.now()) {
-            localStorage.removeItem('jwt_token');
-            jwtToken = null;
-          }
-        } catch (e) {
-          localStorage.removeItem('jwt_token');
-          jwtToken = null;
-        }
-      }
-
-      if (!jwtToken) {
-        const authOverlay = document.getElementById('auth-modal-overlay');
-        if (authOverlay) authOverlay.classList.remove('hidden');
-        throw new Error("Admin login required. Please enter username (admin) and password (admin123) in the dialog.");
-      }
-      console.log("[2] JWT verified");
-
-      // Step 3: Fetch LiveKit token & start backend voice session
-      const data = await window.api.joinLiveKit();
-      if (!data || !data.token) {
-        throw new Error("Failed to receive valid LiveKit room token from backend.");
-      }
-      console.log("[3] LiveKit token received | roomUrl:", data.roomUrl);
-
-      let roomUrl = data.roomUrl;
-      // Hostname rewrite for non-localhost if required
-      if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        if (roomUrl.includes('localhost') || roomUrl.includes('127.0.0.1')) {
-          const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const port = roomUrl.split(':')[2] || '7880';
-          roomUrl = `${wsProto}//${window.location.hostname}:${port}`;
-          console.log("Dynamic AWS roomUrl rewrite:", roomUrl);
-        }
-      }
-
-      // Step 4: Disconnect previous room if existing
-      if (this.room) {
-        try {
-          await this.room.disconnect();
-        } catch (e) {}
-        this.room = null;
-      }
-
-      // Check LiveKit SDK script loaded
-      if (typeof LivekitClient === 'undefined') {
-        throw new Error("LivekitClient JS SDK not loaded. Check internet connection or CDN script tag.");
-      }
-
-      // Instantiate LiveKit Room
-      this.room = new LivekitClient.Room({
-        adaptiveStream: true,
-        dynacast: true,
-        audioCaptureDefaults: {
-          autoGainControl: true,
-          echoCancellation: true,
-          noiseSuppression: true
+    // Back to Lead Dossier
+    const btnBackToLead = container.querySelector('#btnBackToLead');
+    if (btnBackToLead) {
+      btnBackToLead.addEventListener('click', () => {
+        const domain = btnBackToLead.getAttribute('data-domain');
+        const lead = window.store.allLeads.find(l => l.domain === domain || l.website === domain);
+        if (lead && window.app && window.app.leadDetailView) {
+          window.app.leadDetailView.show(lead);
         }
       });
+    }
 
-      // Register Remote Audio Track Subscriptions
-      this.room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
-        console.log("[9] Agent audio track subscribed | kind:", track.kind, "| participant:", participant.identity);
-        if (track.kind === LivekitClient.Track.Kind.Audio) {
-          const element = track.attach();
-          element.id = `remote-audio-${participant.identity}`;
-          document.body.appendChild(element);
-          console.log("[VOICE] frontend audio received | element attached:", element);
+    // LiveKit WebRTC Join
+    const btnConnectLiveKit = container.querySelector('#btnConnectLiveKit');
+    if (btnConnectLiveKit) {
+      btnConnectLiveKit.addEventListener('click', async () => {
+        try {
+          btnConnectLiveKit.disabled = true;
+          btnConnectLiveKit.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Connecting...</span>';
           
-          if (element.play) {
-            element.play()
-              .then(() => console.log("[18] Browser plays audio successfully!"))
-              .catch(e => console.warn("Autoplay notice: User interaction required to play audio:", e));
+          const res = await window.api.joinLiveKit();
+          if (res && res.token && res.roomUrl && window.LivekitClient) {
+            const room = new window.LivekitClient.Room();
+            await room.connect(res.roomUrl, res.token);
+            await room.localParticipant.enableCameraAndMicrophone();
+            alert('Connected to LiveKit in-browser audio room!');
+          } else {
+            alert('LiveKit token generated. Active on server.');
           }
+        } catch (err) {
+          alert('LiveKit connection: ' + (err.message || err));
+        } finally {
+          btnConnectLiveKit.disabled = false;
+          btnConnectLiveKit.innerHTML = '<i class="fa-solid fa-microphone"></i><span>Connect Live Microphone</span>';
         }
       });
-
-      this.room.on(LivekitClient.RoomEvent.ParticipantConnected, (participant) => {
-        console.log("[8] Agent participant connected:", participant.identity);
-        this.logRoomState();
-      });
-
-      this.room.on(LivekitClient.RoomEvent.ParticipantDisconnected, (participant) => {
-        console.log("Participant disconnected:", participant.identity);
-        this.logRoomState();
-      });
-
-      this.room.on(LivekitClient.RoomEvent.Disconnected, () => {
-        console.log("LiveKit Room disconnected.");
-        window.store.setVoiceState({ livekitState: 'DISCONNECTED', statusMessage: 'Disconnected' });
-        const c = document.getElementById('viewContainer');
-        if (c && window.store.currentView === 'liveAgent') this.render(c);
-      });
-
-      // Step 5: Verify Microphone permission
-      console.log("[5] MIC REQUEST: Verifying browser microphone permission...");
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        if (!window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-          throw new Error('Microphone access is blocked by browser on insecure HTTP IP addresses. Please use HTTPS or localhost.');
-        }
-      }
-
-      // Step 4 & 5: Connect to LiveKit Room
-      await this.room.connect(roomUrl, data.token);
-      console.log("[4] Room connected successfully!");
-
-      // Built-in LiveKit method to unlock AudioContext under user gesture click
-      await this.room.startAudio().catch(e => console.warn("AudioContext start notice:", e));
-
-      // Step 6 & 7: Enable Local Microphone Track
-      console.log("[6] MIC TRACK CREATING...");
-      await this.room.localParticipant.setMicrophoneEnabled(true);
-      console.log("[7] MIC TRACK CREATED & PUBLISHED TO LIVEKIT!");
-      console.log("[VOICE] microphone track published");
-
-      // Log full room state
-      this.logRoomState();
-
-      // Reset transcripts for a clean single-greeting session
-      window.store.voiceState.transcripts = [];
-
-      window.store.setVoiceState({
-        livekitState: 'CONNECTED',
-        statusMessage: 'Microphone active. Streaming bidirectional audio.'
-      });
-
-      this.render(container);
-
-    } catch (err) {
-      console.error("LiveKit Connection Error:", err);
-      window.store.setVoiceState({ livekitState: 'ERROR', statusMessage: err.message });
-      alert("LiveKit Connection Error: " + (err.message || "Unable to join room."));
-      this.render(container);
     }
-  }
-
-  async leaveLiveKit(container) {
-    if (this.room) {
-      try {
-        await this.room.disconnect();
-      } catch (e) {
-        console.warn("Error disconnecting room:", e);
-      }
-      this.room = null;
-    }
-
-    // Clean up attached remote audio elements
-    document.querySelectorAll('[id^="remote-audio-"]').forEach(el => el.remove());
-
-    window.store.setVoiceState({
-      livekitState: 'DISCONNECTED',
-      statusMessage: 'Disconnected'
-    });
-
-    console.log("Call ended. Cleaned up LiveKit room and audio elements.");
-    this.render(container);
-  }
-
-  logRoomState() {
-    if (!this.room) {
-      console.log("Room state: No active room.");
-      return;
-    }
-
-    const localPubs = Array.from(this.room.localParticipant.audioTrackPublications.values()).map(p => ({
-      sid: p.trackSid,
-      name: p.trackName,
-      isMuted: p.isMuted
-    }));
-
-    const remoteParts = Array.from(this.room.remoteParticipants.values()).map(p => ({
-      identity: p.identity,
-      audioTracks: Array.from(p.audioTrackPublications.values()).map(t => t.trackSid)
-    }));
-
-    console.log("==========================================");
-    console.log(`[LIVEKIT STATE]`);
-    console.log(`Room connected: ${this.room.state === 'connected'}`);
-    console.log(`Local participant: ${this.room.localParticipant.identity}`);
-    console.log(`Local mic publications:`, localPubs);
-    console.log(`Remote participants (${remoteParts.length}):`, remoteParts);
-    console.log("==========================================");
   }
 }
 
 window.LiveAgentView = LiveAgentView;
-

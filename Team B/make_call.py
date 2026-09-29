@@ -1,42 +1,23 @@
 import os
 import argparse
-from twilio.rest import Client
+import sys
 from dotenv import load_dotenv
 
+# Ensure root & Team B on sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from Pillar_2.outbound_call import place_outbound_call
+
 def place_test_call(to_number: str):
-    # Load variables from .env
     load_dotenv()
-    
-    account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
-    auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
-    twilio_number = os.environ.get('TWILIO_PHONE_NUMBER', '')
-    
-    # We use your ngrok URL combined with the webhook route
-    public_url = os.environ.get('PUBLIC_BASE_URL')
-    if not public_url:
-        print("❌ Error: PUBLIC_BASE_URL is not set in .env! Set it to your ngrok URL.")
-        return
-
-    webhook_url = f"{public_url.rstrip('/')}/inbound-call"
-    
-    # Initialize Twilio Client
-    client = Client(account_sid, auth_token)
-
-    print(f"Initiating call from {twilio_number} to {to_number}...")
-    print(f"Webhook URL being used: {webhook_url}")
-
-    # Trigger the call
-    call = client.calls.create(
-        to=to_number,
-        from_=twilio_number,
-        url=webhook_url
-    )
-    
-    print(f"✅ Call placed successfully! Your phone should be ringing.")
-    print(f"Call SID: {call.sid}")
+    print(f"Initiating outbound test call to {to_number} via Plivo...")
+    try:
+        call_id = place_outbound_call(to_number)
+        print(f"✅ Call placed successfully! Plivo Call UUID: {call_id}")
+    except Exception as e:
+        print(f"❌ Failed to place Plivo call: {e}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Make an outbound call using Twilio")
+    parser = argparse.ArgumentParser(description="Make an outbound call using Plivo")
     parser.add_argument("--to", required=True, help="The phone number to call (e.g. +917988207356)")
     args = parser.parse_args()
     

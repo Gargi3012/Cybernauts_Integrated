@@ -90,6 +90,17 @@ def row_to_lead_record(row: Any) -> LeadRecord:
         confidence_score=d.get("confidence_score"),
         lead_quality=d.get("lead_quality"),
         keyword=d.get("keyword"),
+        call_status=d.get("call_status"),
+        qualification_status=d.get("qualification_status"),
+        qualification_score=d.get("qualification_score"),
+        interest_level=d.get("interest_level"),
+        pain_points=d.get("pain_points"),
+        budget=d.get("budget"),
+        timeline=d.get("timeline"),
+        conversation_summary=d.get("conversation_summary"),
+        last_contacted_at=str(d.get("last_contacted_at")) if d.get("last_contacted_at") else None,
+        provider_call_id=d.get("provider_call_id"),
+        session_id=d.get("session_id"),
         created_at=str(d.get("created_at")) if d.get("created_at") else None,
     )
 
@@ -133,8 +144,11 @@ class LeadRepository:
                     domain, company_name, website, industry, location,
                     contact_page, about_page, emails, phones, social_links, people,
                     tech_stack, lead_score, description, employees, founded, country,
-                    domain_intel, org_graph, confidence_score, lead_quality, keyword
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    domain_intel, org_graph, confidence_score, lead_quality, keyword,
+                    call_status, qualification_status, qualification_score, interest_level,
+                    pain_points, budget, timeline, conversation_summary, last_contacted_at,
+                    provider_call_id, session_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 row["domain"], row["company_name"], row["website"],
                 row["industry"], row["location"], row["contact_page"],
@@ -146,6 +160,17 @@ class LeadRepository:
                 lead.confidence_score if lead.confidence_score is not None else lead.confidence,
                 lead.lead_quality,
                 lead.keyword,
+                row["call_status"],
+                row["qualification_status"],
+                row["qualification_score"],
+                row["interest_level"],
+                row["pain_points"],
+                row["budget"],
+                row["timeline"],
+                row["conversation_summary"],
+                row["last_contacted_at"],
+                row["provider_call_id"],
+                row["session_id"],
             ))
             conn.commit()
             return lead
@@ -178,8 +203,11 @@ class LeadRepository:
                             domain, company_name, website, industry, location,
                             contact_page, about_page, emails, phones, social_links, people,
                             tech_stack, lead_score, description, employees, founded, country,
-                            domain_intel, org_graph, confidence_score, lead_quality, keyword
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            domain_intel, org_graph, confidence_score, lead_quality, keyword,
+                            call_status, qualification_status, qualification_score, interest_level,
+                            pain_points, budget, timeline, conversation_summary, last_contacted_at,
+                            provider_call_id, session_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         row["domain"], row["company_name"], row["website"],
                         row["industry"], row["location"], row["contact_page"],
@@ -191,6 +219,17 @@ class LeadRepository:
                         lead.confidence_score if lead.confidence_score is not None else lead.confidence,
                         lead.lead_quality,
                         lead.keyword,
+                        row["call_status"],
+                        row["qualification_status"],
+                        row["qualification_score"],
+                        row["interest_level"],
+                        row["pain_points"],
+                        row["budget"],
+                        row["timeline"],
+                        row["conversation_summary"],
+                        row["last_contacted_at"],
+                        row["provider_call_id"],
+                        row["session_id"],
                     ))
                     inserted_count += 1
                 except Exception as exc:
@@ -214,6 +253,82 @@ class LeadRepository:
             if not row:
                 return None
             return row_to_lead_record(row)
+        finally:
+            conn.close()
+
+    def get_lead_by_id_or_domain(self, identifier: Union[str, int]) -> Optional[LeadRecord]:
+        """Fetch lead by domain or identifier."""
+        lead = self.get_lead_by_domain(str(identifier))
+        if lead:
+            return lead
+        # Try checking rowid or id if identifier is an integer/string digit
+        conn = get_db_connection(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT rowid, * FROM flowiz_leads WHERE rowid = ? OR domain = ?", (identifier, str(identifier)))
+            row = cursor.fetchone()
+            if row:
+                rec = row_to_lead_record(row)
+                rec.id = row[0]
+                return rec
+            return None
+        finally:
+            conn.close()
+
+    def update_lead_qualification(self, domain: str, qualification_data: Union[Any, Dict[str, Any]]) -> bool:
+        """
+        Updates qualification results for a specific lead domain.
+        Ensures thread-safe and isolated update to flowiz_leads with strict schema validation.
+        """
+        norm_domain = normalize_domain(domain)
+        if not norm_domain:
+            return False
+
+        # Schema Validation Boundary (Pydantic QualificationResult)
+        try:
+            from models.lead_record import QualificationResult
+            if isinstance(qualification_data, QualificationResult):
+                q_model = qualification_data
+            elif isinstance(qualification_data, dict):
+                q_model = QualificationResult(**qualification_data)
+            else:
+                raise ValueError("Qualification data must be a dict or QualificationResult")
+        except Exception as e:
+            logger.error(f"[LeadRepository] Invalid qualification result schema: {e}")
+            raise ValueError(f"Invalid qualification result schema: {e}") from e
+
+        conn = get_db_connection(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE flowiz_leads
+                SET call_status = ?,
+                    qualification_status = ?,
+                    qualification_score = ?,
+                    interest_level = ?,
+                    pain_points = ?,
+                    budget = ?,
+                    timeline = ?,
+                    conversation_summary = ?,
+                    last_contacted_at = CURRENT_TIMESTAMP,
+                    provider_call_id = ?,
+                    session_id = ?
+                WHERE domain = ?
+            """, (
+                q_model.call_status,
+                q_model.qualification_status,
+                q_model.qualification_score,
+                q_model.interest_level,
+                str(q_model.pain_points or ""),
+                q_model.budget or "",
+                q_model.timeline or "",
+                q_model.conversation_summary or "",
+                q_model.provider_call_id or "",
+                q_model.session_id or "",
+                norm_domain,
+            ))
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 
