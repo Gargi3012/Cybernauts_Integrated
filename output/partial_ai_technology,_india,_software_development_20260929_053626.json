@@ -1,0 +1,442 @@
+{
+  "keyword": "AI Technology, India, Software Development",
+  "exit_reason": "Search phase deadline completed",
+  "accumulator_count": 6,
+  "accumulator": [
+    {
+      "company": "Designrush",
+      "website": "https://www.designrush.com",
+      "linkedin": null,
+      "source_url": "https://www.designrush.com/agency/ai-companies/in",
+      "industry": "AI Technology, India, Software Development",
+      "location": null,
+      "source": "Google",
+      "classification": "ALLOW",
+      "relevance_score": 85,
+      "relevance_tier": "HIGH",
+      "relevance_info": {
+        "score": 85,
+        "tier": "HIGH",
+        "matched_signals": [
+          "Services",
+          "Technologies"
+        ],
+        "rejected_signals": [
+          "Description",
+          "Products",
+          "Positions",
+          "Blog/Articles"
+        ],
+        "score_breakdown": {
+          "description": 0.0,
+          "services": 25.0,
+          "technologies": 20.0,
+          "products": 0.0,
+          "positions": 0.0,
+          "blog": 0.0
+        },
+        "industry": "Ai",
+        "confidence": 0.45,
+        "aborted": false,
+        "company_type": "Consultancy",
+        "semantic_trace": [
+          "Matched Services with terms: ['It Services']",
+          "Matched Technologies: ['Web Development', 'Backend', 'It Services', 'Software Development']"
+        ],
+        "technologies": [
+          "It Services",
+          "Web Development",
+          "Backend",
+          "Software Development"
+        ],
+        "products": [],
+        "website": "",
+        "website_source": ""
+      },
+      "industry_detected": "Ai",
+      "discovery_mode": "direct",
+      "canonical_id": "domain:designrush"
+    },
+    {
+      "company": "Vlinkinfo",
+      "website": "https://vlinkinfo.com",
+      "linkedin": null,
+      "source_url": "https://vlinkinfo.com/in/ai-software-development-company-in-india",
+      "industry": "AI Technology, India, Software Development",
+      "location": null,
+      "source": "Google",
+      "classification": "ALLOW",
+      "relevance_score": 100,
+      "relevance_tier": "HIGH",
+      "relevance_info": {
+        "score": 100,
+        "tier": "HIGH",
+        "matched_signals": [
+          "Description",
+          "Services",
+          "Technologies",
+          "Blog/Articles"
+        ],
+        "rejected_signals": [
+          "Products",
+          "Positions"
+        ],
+        "score_breakdown": {
+          "description": 30.0,
+          "services": 25.0,
+          "technologies": 20.0,
+          "products": 0.0,
+          "positions": 0.0,
+          "blog": 5.0
+        },
+        "industry": "Ai",
+        "confidence": 0.8,
+        "aborted": false,
+        "company_type": "Consultancy",
+        "semantic_trace": [
+          "Matched Description with concepts: ['Software Development']",
+          "Matched Services with terms: ['Custom Software Development', 'Software Development', 'Custom Software']",
+          "Matched Technologies: ['Software Development', 'Custom Software']",
+          "Matched Blog/Articles with concepts: ['Software Development']"
+        ],
+        "technologies": [
+          "Custom Software",
+          "Software Development"
+        ],
+        "products": [],
+        "website": "",
+        "website_source": ""
+      },
+      "industry_detected": "Ai",
+      "discovery_mode": "direct",
+      "canonical_id": "domain:vlinkinfo"
+    },
+    {
+      "company": "Indianappdevelopers",
+      "website": "https://www.indianappdevelopers.com",
+      "linkedin": null,
+      "source_url": "https://www.indianappdevelopers.com/ai-development.html",
+      "industry": "AI Technology, India, Software Development",
+      "location": null,
+      "source": "Google",
+      "classification": "ALLOW",
+      "relevance_score": 90,
+      "relevance_tier": "HIGH",
+      "relevance_info": {
+        "score": 90,
+        "tier": "HIGH",
+        "matched_signals": [
+          "Description",
+          "Technologies"
+        ],
+        "rejected_signals": [
+          "Services",
+          "Products",
+          "Positions",
+          "Blog/Articles"
+        ],
+        "score_breakdown": {
+          "description": 30.0,
+          "services": 0.0,
+          "technologies": 20.0,
+          "products": 0.0,
+          "positions": 0.0,
+          "blog": 0.0
+        },
+        "industry": "Ai",
+        "confidence": 0.5,
+        "aborted": false,
+        "company_type": "B2B Software",
+        "semantic_trace": [
+          "Matched Description with concepts: ['Software Development']",
+          "Matched Technologies: ['React', 'Software Development']"
+        ],
+        "technologies": [
+          "React",
+          "Software Development"
+        ],
+        "products": [],
+        "website": "",
+        "website_source": ""
+      },
+      "industry_detected": "Ai",
+      "discovery_mode": "direct",
+      "canonical_id": "domain:indianappdevelopers"
+    },
+    {
+      "company": "Vrinsofts",
+      "website": "https://www.vrinsofts.com",
+      "linkedin": null,
+      "source_url": "https://www.vrinsofts.com/ai-development-service.html",
+      "industry": "AI Technology, India, Software Development",
+      "location": null,
+      "source": "Google",
+      "classification": "ALLOW",
+      "relevance_score": 100,
+      "relevance_tier": "HIGH",
+      "relevance_info": {
+        "score": 100,
+        "tier": "HIGH",
+        "matched_signals": [
+          "Description",
+          "Services",
+          "Technologies"
+        ],
+        "rejected_signals": [
+          "Products",
+          "Positions",
+          "Blog/Articles"
+        ],
+        "score_breakdown": {
+          "description": 30.0,
+          "services": 25.0,
+          "technologies": 20.0,
+          "products": 0.0,
+          "positions": 0.0,
+          "blog": 0.0
+        },
+        "industry": "Ai",
+        "confidence": 0.75,
+        "aborted": false,
+        "company_type": "B2B Software",
+        "semantic_trace": [
+          "Matched Description with concepts: ['Software Development']",
+          "Matched Services with terms: ['It Services']",
+          "Matched Technologies: ['It Services', 'Django', 'Graphql', 'Software Development', 'Vue', 'Python', 'Web Development', 'Full Stack', 'It Consulting', 'React']"
+        ],
+        "technologies": [
+          "It Consulting",
+          "It Services",
+          "Django",
+          "Graphql",
+          "Vue",
+          "Python",
+          "Web Development",
+          "Full Stack",
+          "React",
+          "Software Development"
+        ],
+        "products": [],
+        "website": "",
+        "website_source": ""
+      },
+      "industry_detected": "Ai",
+      "discovery_mode": "direct",
+      "canonical_id": "domain:vrinsofts"
+    },
+    {
+      "company": "IndiaAIindiaai.gov.in› startupINDIAai",
+      "website": "https://indiaai.gov.in",
+      "linkedin": null,
+      "source_url": "https://indiaai.gov.in/startup",
+      "industry": "AI Technology, India, Software Development",
+      "location": null,
+      "source": "Google",
+      "classification": "LIKELY_COMPANY",
+      "relevance_score": 40,
+      "relevance_tier": "LOW",
+      "relevance_info": {
+        "score": 40,
+        "tier": "LOW",
+        "matched_signals": [],
+        "rejected_signals": [
+          "Description",
+          "Services",
+          "Technologies",
+          "Products",
+          "Positions",
+          "Blog/Articles"
+        ],
+        "score_breakdown": {
+          "description": 0.0,
+          "services": 0.0,
+          "technologies": 0.0,
+          "products": 0.0,
+          "positions": 0.0,
+          "blog": 0.0
+        },
+        "industry": "Ai",
+        "confidence": 0.0,
+        "aborted": false,
+        "company_type": "B2B Software",
+        "semantic_trace": [],
+        "technologies": [],
+        "products": [],
+        "website": "",
+        "website_source": ""
+      },
+      "industry_detected": "Ai",
+      "discovery_mode": "direct",
+      "canonical_id": "domain:indiaai"
+    },
+    {
+      "company": "IndiaAIindiaai.gov.in› startup › allINDIAai",
+      "website": "https://indiaai.gov.in",
+      "linkedin": null,
+      "source_url": "https://indiaai.gov.in/startup/all",
+      "industry": "AI Technology, India, Software Development",
+      "location": null,
+      "source": "Google",
+      "classification": "LIKELY_COMPANY",
+      "relevance_score": 40,
+      "relevance_tier": "LOW",
+      "relevance_info": {
+        "score": 40,
+        "tier": "LOW",
+        "matched_signals": [],
+        "rejected_signals": [
+          "Description",
+          "Services",
+          "Technologies",
+          "Products",
+          "Positions",
+          "Blog/Articles"
+        ],
+        "score_breakdown": {
+          "description": 0.0,
+          "services": 0.0,
+          "technologies": 0.0,
+          "products": 0.0,
+          "positions": 0.0,
+          "blog": 0.0
+        },
+        "industry": "Ai",
+        "confidence": 0.0,
+        "aborted": false,
+        "company_type": "B2B Software",
+        "semantic_trace": [],
+        "technologies": [],
+        "products": [],
+        "website": "",
+        "website_source": ""
+      },
+      "industry_detected": "Ai",
+      "discovery_mode": "direct",
+      "canonical_id": "domain:indiaai"
+    }
+  ],
+  "directory_candidates": [
+    [
+      "https://www.ksolves.com/blog/artificial-intelligence/best-companies-in-india",
+      "Ksolvesksolves.com› blog  › artificial-intelligence  › best-companies-in-indiaList of Best AI Companies in India - 2026",
+      "google"
+    ],
+    [
+      "https://www.esparkinfo.com/software-development/top-companies/ai/india",
+      "esparkinfo.comesparkinfo.com› home  › software development  › top 25 software development companies in 2026  › top ai software development companies in 2026  › top 10 ai software development companies in india for 2026Top AI Software Development Companies India - 2026 Rankings",
+      "google"
+    ],
+    [
+      "https://xchange.avixa.org/posts/top-10-ai-development-companies-in-india-for-startups-and-enterprises-2026-updated-list",
+      "AVIXA Xchangexchange.avixa.org› posts  › top-10-ai-development-companies-in-india-for-startups-and-enterprises-2026-updated-listTop 10 AI Development Companies in India (2026 Updated) | AVIXA Xchange",
+      "google"
+    ],
+    [
+      "https://seesec.io/blogs/top-ai-development-company-in-india",
+      "Seesecseesec.io› home  › top ai development company in india | ai app & ml development servicesTop AI Development Company in India | AI App & ML Development Services - Seesec",
+      "google"
+    ],
+    [
+      "https://digi9.co.in/ai-software-development-services/",
+      "DIGI9digi9.co.in› home  › blog  › top 5 ai software development services company in india 2026Top 5 AI Software Development Services Company In India 2026",
+      "google"
+    ],
+    [
+      "https://www.secuodsoft.com/blog/machine-learning-and-ai/top-10-ai-development-companies-in-india.php",
+      "Secuodsoftsecuodsoft.com› blog  › machine-learning-and-ai  › top-10-ai-development-companies-in-india.phpTop 10 AI Development Companies in India 2026",
+      "google"
+    ],
+    [
+      "https://www.infinititechsolution.com/blog-details/top-ai-software-development-companies-in-india",
+      "Infinititechsolutioninfinititechsolution.com› blog-details  › top-ai-software-development-companies-in-indiaTop AI Software Development Companies in India",
+      "google"
+    ],
+    [
+      "https://www.innovationm.com/blog/top-ai-development-companies-in-india/",
+      "InnovationMinnovationm.com› home  › top ai development companies in india (2026 list)Top & Best AI Development Companies in India (2026 List)",
+      "google"
+    ],
+    [
+      "https://cutshort.io/companies/artificial-intelligence",
+      "Cutshortcutshort.io› home  › companies by category  › artificial intelligence (ai) companies/startups in indiaArtificial Intelligence (AI) Companies/Startups in India",
+      "google"
+    ],
+    [
+      "https://www.sutrahr.com/top-ai-startup-companies/",
+      "Sutra HRsutrahr.com› top-ai-startup-companiesTop 50 Best AI Startup Companies in India 2026 | AI Leaders",
+      "google"
+    ],
+    [
+      "https://www.esparkinfo.com/software-development/top-companies/ai/india",
+      "esparkinfo.comesparkinfo.com› home  › software development  › top 25 software development companies in 2026  › top ai software development companies in 2026  › top 10 ai software development companies in india for 2026Top AI Software Development Companies India - 2026 Rankings",
+      "google"
+    ],
+    [
+      "https://cutshort.io/companies/artificial-intelligence",
+      "Cutshortcutshort.io› home  › companies by category  › artificial intelligence (ai) companies/startups in indiaArtificial Intelligence (AI) Companies/Startups in India",
+      "google"
+    ],
+    [
+      "https://xchange.avixa.org/posts/top-10-ai-development-companies-in-india-for-startups-and-enterprises-2026-updated-list",
+      "AVIXA Xchangexchange.avixa.org› posts  › top-10-ai-development-companies-in-india-for-startups-and-enterprises-2026-updated-listTop 10 AI Development Companies in India (2026 Updated) | AVIXA Xchange",
+      "google"
+    ],
+    [
+      "https://wellfound.com/startups/l/india/artificial-intelligence",
+      "Wellfoundwellfound.com› startups  › l  › india  › artificial-intelligenceBest Artificial Intelligence Companies to Work for in India 2026 | Wellfound",
+      "google"
+    ],
+    [
+      "https://www.ksolves.com/blog/artificial-intelligence/best-companies-in-india",
+      "Ksolvesksolves.com› blog  › artificial-intelligence  › best-companies-in-indiaList of Best AI Companies in India - 2026",
+      "google"
+    ],
+    [
+      "https://www.ycombinator.com/companies/industry/ai/india",
+      "Y Combinatorycombinator.com› companies  › industry  › ai  › indiaAI (Artificial Intelligence) Startups funded by Y Combinator (YC) in India 2026 | Y Combinator",
+      "google"
+    ],
+    [
+      "https://www.stanga.net/en/blog/best-40-ai-software-development-companies/",
+      "Stangastanga.net› home  › best 40 ai software development companiesBest 40 AI Software Development Companies | Stanga",
+      "google"
+    ],
+    [
+      "https://www.innovationm.com/blog/top-ai-development-companies-in-india/",
+      "InnovationMinnovationm.com› home  › top ai development companies in india (2026 list)Top & Best AI Development Companies in India (2026 List)",
+      "google"
+    ],
+    [
+      "https://www.startupindia.gov.in/content/sih/en/bloglist/blogs/7_leading_AI_startups_in_India.html",
+      "Startup Indiastartupindia.gov.in› content  › sih  › en  › bloglist  › blogs  › 7_leading_AI_startups_in_India.html7 Leading Artificial Intelligence Startups In India In 2018",
+      "google"
+    ],
+    [
+      "https://kanhasoft.com/blog/top-10-custom-ai-software-development-companies-in-india/",
+      "Kanhasoftkanhasoft.com› home  › top 10 custom ai software development companies in indiaTop 10 Custom AI Software Development Companies in India",
+      "google"
+    ]
+  ],
+  "remaining_tasks_preview": [
+    "site:clutch.co ai technology, india, software development companies",
+    "site:goodfirms.co ai technology, india, software development companies",
+    "\"ai technology, india, software development company\" inurl:contact",
+    "\"ai technology, india, software development company\" intitle:leadership",
+    "\"ai technology, india, software development companies\" filetype:pdf",
+    "Software Development startups",
+    "custom ai technology, india, software development development",
+    "AI Technology, India, Software Development",
+    "ai technology, india, software development company",
+    "ai technology, india, software development software company",
+    "Software Development company",
+    "Software Development software company",
+    "Web Development company",
+    "Web Development startups",
+    "Web Development software company",
+    "Custom Software company",
+    "Custom Software startups",
+    "Custom Software software company",
+    "ai technology, india, software development outsourcing",
+    "ai technology, india, software development consulting"
+  ]
+}

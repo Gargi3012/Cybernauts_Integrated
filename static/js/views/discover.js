@@ -6,7 +6,11 @@
 
 class DiscoverView {
   render(container) {
-    const isRunning = window.store.pipelineState && window.store.pipelineState.status === 'running';
+    const pState = window.store.pipelineState || {};
+    const isRunning = pState.status === 'running';
+    const isCompleted = pState.status === 'completed';
+    const isError = pState.status === 'error';
+    const showStatus = isRunning || isCompleted || isError;
 
     container.innerHTML = `
       <div style="margin-bottom: 24px;">
@@ -78,22 +82,22 @@ class DiscoverView {
           </div>
 
           <!-- Real-Time Progress Box -->
-          <div id="discoverStatusBox" style="margin-top: 24px; padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-surface-secondary); display: ${isRunning ? 'block' : 'none'};">
+          <div id="discoverStatusBox" style="margin-top: 24px; padding: 20px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-surface-secondary); display: ${showStatus ? 'block' : 'none'};">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
               <div style="display: flex; align-items: center; gap: 8px;">
-                <span class="status-indicator" style="background: #3b82f6;"></span>
+                <span class="status-indicator" style="background: ${isError ? '#ef4444' : isCompleted ? '#10b981' : '#3b82f6'};"></span>
                 <span id="lblDiscoverStage" style="font-weight: 700; font-size: 14px; color: var(--text-primary);">
-                  ${window.store.pipelineState.stage || 'Initializing search...'}
+                  ${pState.stage || 'Ready'}
                 </span>
               </div>
               <div id="lblDiscoverPct" class="font-mono" style="font-weight: 700; font-size: 14px; color: var(--color-primary);">
-                ${window.store.pipelineState.progress_pct || 0}%
+                ${pState.progress_pct || 0}%
               </div>
             </div>
 
             <!-- Progress Bar -->
             <div style="height: 6px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin-bottom: 16px;">
-              <div id="barDiscoverProgress" style="height: 100%; width: ${window.store.pipelineState.progress_pct || 0}%; background: var(--color-primary); transition: width 0.3s ease;"></div>
+              <div id="barDiscoverProgress" style="height: 100%; width: ${pState.progress_pct || 0}%; background: ${isError ? '#ef4444' : 'var(--color-primary)'}; transition: width 0.3s ease;"></div>
             </div>
 
             <!-- Live Metrics Counter -->
@@ -101,32 +105,32 @@ class DiscoverView {
               <div style="background: #ffffff; padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">
                 <div style="font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Companies Found</div>
                 <div id="lblFoundCount" style="font-size: 18px; font-weight: 700; color: var(--text-primary); margin-top: 2px;">
-                  ${window.store.pipelineState.companies_found || 0}
+                  ${pState.companies_found || 0}
                 </div>
               </div>
               <div style="background: #ffffff; padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">
                 <div style="font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Leads Generated</div>
                 <div id="lblLeadsCount" style="font-size: 18px; font-weight: 700; color: #16a34a; margin-top: 2px;">
-                  ${window.store.pipelineState.leads_generated || 0}
+                  ${pState.leads_generated || 0}
                 </div>
               </div>
               <div style="background: #ffffff; padding: 10px; border-radius: 6px; border: 1px solid var(--border-color);">
                 <div style="font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Elapsed Time</div>
                 <div id="lblElapsedSec" style="font-size: 18px; font-weight: 700; color: var(--text-primary); margin-top: 2px;">
-                  ${window.store.pipelineState.elapsed_sec || 0}s
+                  ${pState.elapsed_sec || 0}s
                 </div>
               </div>
             </div>
 
             <!-- Completion Banner -->
-            <div id="discoverCompletionBanner" style="display: none; margin-top: 16px; padding: 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px; text-align: center;">
-              <div style="font-weight: 700; color: #065f46; font-size: 14px; margin-bottom: 4px;" id="lblCompletionMsg">
-                Discovery completed!
+            <div id="discoverCompletionBanner" style="display: ${(isCompleted || isError) ? 'block' : 'none'}; margin-top: 16px; padding: 14px; background: ${isError ? '#fef2f2' : (pState.leads_generated || 0) > 0 ? '#ecfdf5' : '#fefce8'}; border: 1px solid ${isError ? '#fecaca' : (pState.leads_generated || 0) > 0 ? '#a7f3d0' : '#fef08a'}; border-radius: 6px; text-align: center;">
+              <div style="font-weight: 700; color: ${isError ? '#991b1b' : (pState.leads_generated || 0) > 0 ? '#065f46' : '#854d0e'}; font-size: 14px; margin-bottom: 4px;" id="lblCompletionMsg">
+                ${isError ? 'Discovery failed' : (pState.leads_generated || 0) > 0 ? 'Discovery completed!' : 'No matching companies found'}
               </div>
-              <div style="font-size: 12.5px; color: #047857; margin-bottom: 10px;" id="lblCompletionCount">
-                New leads have been enriched and normalized into the canonical repository.
+              <div style="font-size: 12.5px; color: ${isError ? '#b91c1c' : (pState.leads_generated || 0) > 0 ? '#047857' : '#a16207'}; margin-bottom: 10px;" id="lblCompletionCount">
+                ${isError ? (pState.error_message || pState.stage || 'An error occurred during discovery.') : (pState.leads_generated || 0) > 0 ? `${pState.leads_generated} leads successfully discovered and saved.` : 'No matching companies were found for these criteria. Try broader keywords or alternative locations.'}
               </div>
-              <button class="btn btn-primary" id="btnViewDiscoveredLeads">
+              <button class="btn btn-primary" id="btnViewDiscoveredLeads" style="display: ${isCompleted && (pState.leads_generated || 0) > 0 ? 'inline-flex' : 'none'};">
                 <i class="fa-solid fa-address-book"></i>
                 <span>View Discovered Leads</span>
               </button>
@@ -176,8 +180,17 @@ class DiscoverView {
 
     this.attachEvents(container);
 
-    if (isRunning) {
-      this.pollProgress(container);
+    // Sync latest status from server on mount
+    if (window.api && window.api.getPipelineStatus) {
+      window.api.getPipelineStatus().then(status => {
+        if (status && status.status !== 'idle') {
+          window.store.setPipelineState(status);
+          this.updateUIWithStatus(container, status);
+          if (status.status === 'running') {
+            this.pollProgress(container);
+          }
+        }
+      }).catch(err => console.warn('Pipeline status check:', err));
     }
   }
 
@@ -262,18 +275,55 @@ class DiscoverView {
 
             if (completionBanner) {
               completionBanner.style.display = 'block';
+              const btnView = completionBanner.querySelector('#btnViewDiscoveredLeads');
+
+              if ((status.leads_generated || 0) > 0) {
+                completionBanner.style.background = '#ecfdf5';
+                completionBanner.style.borderColor = '#a7f3d0';
+                if (lblCompletionMsg) {
+                  lblCompletionMsg.style.color = '#065f46';
+                  lblCompletionMsg.innerText = `Discovery completed!`;
+                }
+                if (lblCompletionCount) {
+                  lblCompletionCount.style.color = '#047857';
+                  lblCompletionCount.innerText = `${status.leads_generated} leads successfully discovered and saved.`;
+                }
+                if (btnView) {
+                  btnView.style.display = 'inline-flex';
+                  btnView.onclick = () => {
+                    window.location.hash = 'leads';
+                  };
+                }
+              } else {
+                // Genuine zero results
+                completionBanner.style.background = '#fefce8';
+                completionBanner.style.borderColor = '#fef08a';
+                if (lblCompletionMsg) {
+                  lblCompletionMsg.style.color = '#854d0e';
+                  lblCompletionMsg.innerText = `No matching companies found`;
+                }
+                if (lblCompletionCount) {
+                  lblCompletionCount.style.color = '#a16207';
+                  lblCompletionCount.innerText = `No matching companies were found for these criteria. Try broader keywords or alternative locations.`;
+                }
+                if (btnView) btnView.style.display = 'none';
+              }
+            }
+          } else if (status.status === 'error') {
+            if (completionBanner) {
+              completionBanner.style.display = 'block';
+              completionBanner.style.background = '#fef2f2';
+              completionBanner.style.borderColor = '#fecaca';
               if (lblCompletionMsg) {
-                lblCompletionMsg.innerText = `Discovery completed!`;
+                lblCompletionMsg.style.color = '#991b1b';
+                lblCompletionMsg.innerText = `Discovery failed`;
               }
               if (lblCompletionCount) {
-                lblCompletionCount.innerText = `${status.leads_generated || 0} leads successfully discovered and saved.`;
+                lblCompletionCount.style.color = '#b91c1c';
+                lblCompletionCount.innerText = status.error_message || status.stage || 'An error occurred during discovery. Please check server logs and try again.';
               }
               const btnView = completionBanner.querySelector('#btnViewDiscoveredLeads');
-              if (btnView) {
-                btnView.onclick = () => {
-                  window.location.hash = 'leads';
-                };
-              }
+              if (btnView) btnView.style.display = 'none';
             }
           }
         }
@@ -281,6 +331,78 @@ class DiscoverView {
         console.warn('Progress poll notice:', err);
       }
     }, 1500);
+  }
+
+  updateUIWithStatus(container, status) {
+    if (!container || !status) return;
+    const statusBox = container.querySelector('#discoverStatusBox');
+    const lblStage = container.querySelector('#lblDiscoverStage');
+    const lblPct = container.querySelector('#lblDiscoverPct');
+    const barProgress = container.querySelector('#barDiscoverProgress');
+    const lblFound = container.querySelector('#lblFoundCount');
+    const lblLeads = container.querySelector('#lblLeadsCount');
+    const lblElapsed = container.querySelector('#lblElapsedSec');
+    const completionBanner = container.querySelector('#discoverCompletionBanner');
+    const lblCompletionMsg = container.querySelector('#lblCompletionMsg');
+    const lblCompletionCount = container.querySelector('#lblCompletionCount');
+    const btnView = container.querySelector('#btnViewDiscoveredLeads');
+
+    if (statusBox) statusBox.style.display = 'block';
+    if (lblStage) lblStage.innerText = status.stage || 'Ready';
+    if (lblPct) lblPct.innerText = `${status.progress_pct || 0}%`;
+    if (barProgress) barProgress.style.width = `${status.progress_pct || 0}%`;
+    if (lblFound) lblFound.innerText = status.companies_found || 0;
+    if (lblLeads) lblLeads.innerText = status.leads_generated || 0;
+    if (lblElapsed) lblElapsed.innerText = `${status.elapsed_sec || 0}s`;
+
+    if (status.status === 'completed') {
+      if (completionBanner) {
+        completionBanner.style.display = 'block';
+        if ((status.leads_generated || 0) > 0) {
+          completionBanner.style.background = '#ecfdf5';
+          completionBanner.style.borderColor = '#a7f3d0';
+          if (lblCompletionMsg) {
+            lblCompletionMsg.style.color = '#065f46';
+            lblCompletionMsg.innerText = `Discovery completed!`;
+          }
+          if (lblCompletionCount) {
+            lblCompletionCount.style.color = '#047857';
+            lblCompletionCount.innerText = `${status.leads_generated} leads successfully discovered and saved.`;
+          }
+          if (btnView) {
+            btnView.style.display = 'inline-flex';
+            btnView.onclick = () => { window.location.hash = 'leads'; };
+          }
+        } else {
+          completionBanner.style.background = '#fefce8';
+          completionBanner.style.borderColor = '#fef08a';
+          if (lblCompletionMsg) {
+            lblCompletionMsg.style.color = '#854d0e';
+            lblCompletionMsg.innerText = `No matching companies found`;
+          }
+          if (lblCompletionCount) {
+            lblCompletionCount.style.color = '#a16207';
+            lblCompletionCount.innerText = `No matching companies were found for these criteria. Try broader keywords or alternative locations.`;
+          }
+          if (btnView) btnView.style.display = 'none';
+        }
+      }
+    } else if (status.status === 'error') {
+      if (completionBanner) {
+        completionBanner.style.display = 'block';
+        completionBanner.style.background = '#fef2f2';
+        completionBanner.style.borderColor = '#fecaca';
+        if (lblCompletionMsg) {
+          lblCompletionMsg.style.color = '#991b1b';
+          lblCompletionMsg.innerText = `Discovery failed`;
+        }
+        if (lblCompletionCount) {
+          lblCompletionCount.style.color = '#b91c1c';
+          lblCompletionCount.innerText = status.error_message || status.stage || 'An error occurred during discovery.';
+        }
+        if (btnView) btnView.style.display = 'none';
+      }
+    }
   }
 }
 
