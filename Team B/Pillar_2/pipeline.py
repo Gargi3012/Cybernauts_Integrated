@@ -2,7 +2,7 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.services.deepgram.stt import DeepgramSTTService
 
-def create_deepgram_stt(api_key: str, model: str = "nova-2-phonecall", language: str = "multi", sample_rate: int = 16000) -> DeepgramSTTService:
+def create_deepgram_stt(api_key: str, model: str = "nova-2", language: str = "hi", sample_rate: int = 16000) -> DeepgramSTTService:
     """Exposed factory for the main app to build the Deepgram service via Pillar 2."""
     return DeepgramSTTService(
         api_key=api_key,
@@ -10,9 +10,10 @@ def create_deepgram_stt(api_key: str, model: str = "nova-2-phonecall", language:
         settings=DeepgramSTTService.Settings(
             model=model,
             language=language,
-            smart_format=True,
+            smart_format=False,  # Disabling smart_format prevents '05:02'/'04:01' time-colon corruption
+            numerals=True,      # Enabling numerals ensures digits are output as clean numerals
             interim_results=True,
-            endpointing=400,   # ms before Deepgram finalises a transcript (calibrated from 500ms to 400ms)
+            endpointing=400,   # ms before Deepgram finalises a transcript
         ),
     )
 

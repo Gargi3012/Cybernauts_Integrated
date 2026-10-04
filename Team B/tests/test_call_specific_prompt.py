@@ -170,7 +170,7 @@ def test_prompt_contract_multilingual_unicode():
 
 def test_prompt_contract_special_characters():
     """Verify special punctuation, quotes, and symbols are preserved."""
-    special = "Intro: 'Alex' from Flowiz! Inquire: (1) Cost/budget? (2) Timeline: ASAP? 100% satisfaction."
+    special = "Intro: 'Sara' from Flowiz! Inquire: (1) Cost/budget? (2) Timeline: ASAP? 100% satisfaction."
     cfg = CallPromptConfig(call_prompt=special)
     assert cfg.call_prompt == special
 

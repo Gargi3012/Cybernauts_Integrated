@@ -130,6 +130,7 @@ NAME_STOP_WORDS = {
 class CriticalCallMemory:
     """Authoritative session-level memory preserved outside of the sliding window."""
     session_id: str = ""
+
     confirmed_name: Optional[str] = None
     phone_digits: str = ""
     crm: Optional[str] = None
@@ -143,6 +144,7 @@ class CriticalCallMemory:
     hangup_requested: bool = False
     custom_notes: List[str] = field(default_factory=list)
     phone_normalizer: Any = field(default=None)
+    phone_confirmed: bool = False
 
     def __post_init__(self):
         if self.phone_normalizer is None:
@@ -187,9 +189,23 @@ class CriticalCallMemory:
         # 1. Phone number digits & multi-turn processing via PhoneDigitNormalizer
         if self.phone_normalizer is None:
             self.phone_normalizer = PhoneDigitNormalizer(session_id=self.session_id)
+            
+        old_digits = self.phone_digits
         self.phone_normalizer.process_utterance(text)
         self.phone_digits = self.phone_normalizer.digits
+        
+        # If digits changed, reset confirmation
+        if old_digits != self.phone_digits:
+            self.phone_confirmed = False
 
+        # If we have 10 valid digits and user confirms or denies
+        if len(self.phone_digits) == 10:
+            if re.search(r'\b(yes|yeah|yep|correct|right|haan|han|ji|bilkul|exactly)\b', lower_text):
+                self.phone_confirmed = True
+                logger.info(f"[CRITICAL_MEMORY] Phone confirmed by user | session={self.session_id}")
+            elif re.search(r'\b(no|wrong|incorrect|nahi|na|wait|galat)\b', lower_text):
+                self.phone_confirmed = False
+                logger.info(f"[CRITICAL_MEMORY] Phone rejected by user | session={self.session_id}")
 
         # 2. Confirmed Name detection
         name_match = re.search(r"(?:my name is|i am|i'm|this is|mera naam|call me)\s+([^,.\n!]+)", text, re.IGNORECASE)
@@ -302,9 +318,15 @@ class CriticalCallMemory:
         if self.confirmed_name:
             lines.append(f"- Confirmed Prospect Name: {self.confirmed_name}")
         if self.phone_digits:
-            status = "10 digits ready for confirmation" if len(self.phone_digits) == 10 else f"{len(self.phone_digits)} digits collected so far"
+            if self.phone_confirmed or self.lead_saved:
+                status = "CONFIRMED by user - DO NOT ask to confirm again. Proceed with next steps."
+            elif len(self.phone_digits) == 10:
+                status = "10 digits ready for confirmation"
+            else:
+                status = f"{len(self.phone_digits)} digits collected so far"
+                
             lines.append(f"- Phone Number Digits Collected: {self.phone_digits} ({status})")
-            if self.phone_normalizer:
+            if self.phone_normalizer and not (self.phone_confirmed or self.lead_saved):
                 guidance = self.phone_normalizer.render_prompt_guidance()
                 if guidance:
                     lines.append(guidance)
@@ -360,6 +382,11 @@ class SlidingWindowLLMContext(LLMContext):
         self._raw_system_prompt: str = ""
         self._full_history: List[dict] = []
         
+        if self.shared_state is not None:
+            self.shared_state["phone_normalizer"] = self.critical_memory.phone_normalizer
+            self.shared_state["phone_buffer"] = self.critical_memory.phone_normalizer._buffer
+            self.shared_state["session_id"] = session_id
+
         # Extract initial system prompt
         if self._messages and self._messages[0].get("role") == "system":
             self._raw_system_prompt = self._messages[0].get("content", "")
@@ -380,10 +407,15 @@ class SlidingWindowLLMContext(LLMContext):
         base_ctx.critical_memory = CriticalCallMemory(session_id=session_id)
         base_ctx._raw_system_prompt = ""
         base_ctx._full_history = list(base_ctx._messages)
-        
+
+        if base_ctx.shared_state is not None:
+            base_ctx.shared_state["phone_normalizer"] = base_ctx.critical_memory.phone_normalizer
+            base_ctx.shared_state["phone_buffer"] = base_ctx.critical_memory.phone_normalizer._buffer
+            base_ctx.shared_state["session_id"] = session_id
+
         if base_ctx._messages and base_ctx._messages[0].get("role") == "system":
             base_ctx._raw_system_prompt = base_ctx._messages[0].get("content", "")
-            
+
         logger.info(
             f"[CONTEXT_MANAGER] Initialized SlidingWindowLLMContext | "
             f"session_id={session_id or 'none'} | max_window={base_ctx.max_window_messages}"
@@ -398,8 +430,12 @@ class SlidingWindowLLMContext(LLMContext):
         # Extract deterministic facts into critical memory
         if role == "user" and isinstance(content, str):
             self.critical_memory.extract_from_user_utterance(content)
+            if self.shared_state is not None:
+                self.shared_state["phone_confirmed"] = self.critical_memory.phone_confirmed
         elif role == "assistant" and isinstance(content, str):
             self.critical_memory.extract_from_assistant_utterance(content)
+            if self.shared_state is not None:
+                self.shared_state["phone_confirmed"] = self.critical_memory.phone_confirmed
         elif role == "system" and not self._raw_system_prompt:
             self._raw_system_prompt = content
 

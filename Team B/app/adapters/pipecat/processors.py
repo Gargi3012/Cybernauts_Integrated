@@ -429,6 +429,8 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
             lang_str = str(lang).replace("Language.", "").lower()
             kw["language"] = lang_str
             kw["sample_rate"] = str(sample_rate or 8000)
+            kw["smart_format"] = "false"
+            kw["numerals"] = "true"
             return kw
         stt._build_connect_kwargs = safe_build_kwargs
 

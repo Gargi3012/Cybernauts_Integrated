@@ -34,6 +34,11 @@ class ToolInterceptionProcessor(FrameProcessor):
                         args = json.loads(args_str)
                         name = args.get("name", "")
                         phone = args.get("phone", "")
+                        # Deterministic phone number override: The LLM must NOT determine the digits
+                        if self.shared_state and "phone_normalizer" in self.shared_state:
+                            norm = self.shared_state["phone_normalizer"]
+                            if hasattr(norm, "digits") and len(norm.digits) == 10:
+                                phone = norm.digits
                         project_details = args.get("project_details", "")
                         if name or phone:
                             logger.info(f"ToolInterceptionProcessor: Intercepted text tool call! name='{name}', phone='{phone}', project='{project_details}'")
