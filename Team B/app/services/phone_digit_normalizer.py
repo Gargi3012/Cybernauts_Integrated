@@ -1,22 +1,4 @@
 """phone_digit_normalizer.py — Deterministic Phone Digit Normalizer, Persistent Buffer, and Validator.
-===================================================================================================
-Authoritative, deterministic normalizer and multi-turn accumulator for 10-digit Indian mobile numbers.
-Completely independent of LLM context and hallucinations.
-
-Architecture:
-Deepgram transcript
-       ↓
-PhoneDigitNormalizer (trilingual word/digit/multiplier/time-token parser)
-       ↓
-normalized digit tokens (with explicit TIME_LIKE_AMBIGUOUS classification)
-       ↓
-persistent PhoneCaptureBuffer (handles interims, duplicates, corrections, final phrases)
-       ↓
-PhoneValidator (10-digit validation & context-aware user messages)
-"""
-
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
 import itertools
 import re
