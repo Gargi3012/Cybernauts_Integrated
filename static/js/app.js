@@ -87,7 +87,7 @@ class CybernautsApp {
       // Re-render active view if relevant
       const current = window.store.currentView;
       const container = document.getElementById('viewContainer');
-      if (container && (current === 'overview' || current === 'pipeline')) {
+      if (container && (current === 'overview' || current === 'pipeline' || current === 'leads')) {
         this.views[current].render(container);
       }
     });

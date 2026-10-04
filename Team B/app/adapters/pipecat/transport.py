@@ -74,6 +74,11 @@ class PlivoTransportAdapter(PipecatTransportAdapter):
         auth_id: str | None = None,
         auth_token: str | None = None,
     ):
+        self.websocket = websocket
+        self.stream_id = stream_id
+        self.call_id = call_id
+        self.auth_id = auth_id
+        self.auth_token = auth_token
         pillar2_plivo = _import_pillar2_module("pillar2_plivo", "plivo_bot.py")
         self.transport = pillar2_plivo.build_plivo_transport(
             websocket=websocket,

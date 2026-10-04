@@ -23,6 +23,9 @@ if ROOT not in sys.path:
 PILLAR1_PATH = os.path.join(ROOT, "pillar1")
 if os.path.exists(PILLAR1_PATH) and PILLAR1_PATH not in sys.path:
     sys.path.insert(0, PILLAR1_PATH)
+TEAM_B_PATH = os.path.abspath(os.path.join(ROOT, "..", "Team B"))
+if os.path.exists(TEAM_B_PATH) and TEAM_B_PATH not in sys.path:
+    sys.path.insert(0, TEAM_B_PATH)
 
 DB_PATH = os.path.join(ROOT, "leads.db")
 
@@ -570,6 +573,36 @@ async def dispatch_lead_call(
     }
     context_str = json.dumps(company_context)
 
+    # Call Prompt / Script Validation and Registration (Phase 3)
+    from app.services.call_config_registry import CallConfigRegistry, CallPromptConfig, call_config_registry
+    from loguru import logger
+
+    prompt_config = None
+    raw_prompt = payload.get("call_prompt") if (payload and isinstance(payload, dict)) else None
+    if raw_prompt is not None and str(raw_prompt).strip():
+        try:
+            prompt_config = CallPromptConfig(
+                call_prompt=str(raw_prompt),
+                objective=payload.get("objective"),
+                custom_qualification_criteria=payload.get("custom_qualification_criteria") or [],
+            )
+            audit_meta = prompt_config.get_audit_meta()
+            logger.info(
+                f"[CALL_PROMPT_RECEIVED] Received call prompt | lead_id={lead.domain} | "
+                f"dispatch_id={dispatch_id} | length={audit_meta['length']} | sha256={audit_meta['sha256']}"
+            )
+            call_config_registry.set(
+                session_id=session_id,
+                config=prompt_config,
+                dispatch_id=dispatch_id,
+            )
+        except ValueError as val_err:
+            logger.warning(f"[CALL_PROMPT_REJECTED] Invalid call prompt for lead {lead.domain}: {val_err}")
+            raise HTTPException(status_code=422, detail=str(val_err))
+        except Exception as p_err:
+            logger.warning(f"[CALL_PROMPT_REJECTED] Call prompt rejected for lead {lead.domain}: {p_err}")
+            raise HTTPException(status_code=422, detail=f"Invalid call_prompt: {p_err}")
+
     # Invoke Team B's Plivo outbound calling layer
     try:
         from Pillar_2.outbound_call import place_outbound_call
@@ -582,6 +615,10 @@ async def dispatch_lead_call(
             dispatch_id=dispatch_id,
         )
     except Exception as e:
+        # Purge ephemeral call config from registry on dispatch failure
+        if prompt_config:
+            call_config_registry.delete(session_id=session_id, dispatch_id=dispatch_id, reason="dispatch_failed")
+
         # Revert call status on failure
         repo.update_lead_qualification(lead.domain, {
             "call_status": "failed",
@@ -607,6 +644,8 @@ async def dispatch_lead_call(
         "provider": "plivo",
         "provider_call_id": call_id,
         "target_phone": clean_phone,
+        "call_prompt_attached": bool(prompt_config is not None),
+        "call_prompt_meta": prompt_config.get_audit_meta() if prompt_config else None,
         "company_context": company_context,
     }
 

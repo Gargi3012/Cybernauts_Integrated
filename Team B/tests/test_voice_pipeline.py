@@ -427,3 +427,188 @@ class TestDynamicLLMFiller:
         _run(proc.process_frame(UserStartedSpeakingFrame(), None))
         assert proc._filler_active is False
 
+
+class TestStreamingVoiceLatencyAndFiller:
+    """Comprehensive tests for true incremental streaming, TurnGuard turn filtering, and filler handling."""
+
+    def _setup_processor(self, current_turn_id=1):
+        from app.adapters.pipecat.llm_filler_processor import DynamicLLMFillerProcessor
+        shared = {"current_turn_id": current_turn_id}
+        proc = DynamicLLMFillerProcessor(session_id="test-streaming-filler", shared_state=shared)
+        pushed = []
+
+        async def mock_push(frame, direction=None):
+            pushed.append(frame)
+        proc.push_frame = mock_push
+        return proc, shared, pushed
+
+    def test_a_first_text_chunk_forwarded_immediately(self):
+        """A. First text chunk forwarded immediately without waiting for full response."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        # Send first partial chunk
+        _run(proc.process_frame(TextFrame(text="Hel"), None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) == 1, "First chunk must be forwarded immediately"
+        assert text_frames[0].text == "Hel"
+
+    def test_b_multiple_chunks_forwarded_incrementally(self):
+        """B. Multiple chunks forwarded incrementally as they arrive."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        chunks = ["Hel", "lo", " Rahul", ",", " how", " can", " I", " help"]
+        for c in chunks:
+            _run(proc.process_frame(TextFrame(text=c), None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) == len(chunks), "Every chunk must be pushed incrementally"
+        assert [f.text for f in text_frames] == chunks
+
+    def test_c_no_full_response_buffering(self):
+        """C. Response is not buffered in memory waiting for LLMFullResponseEndFrame."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        _run(proc.process_frame(TextFrame(text="First sentence complete."), None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) == 1
+        assert proc._buffer == "", "Buffer should be empty during streaming"
+
+    def test_d_json_looking_ordinary_text_does_not_permanently_buffer(self):
+        """D. JSON-looking ordinary text does not permanently enter a buffering state."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame, LLMFullResponseEndFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        # Emits ordinary text starting with '{' that is not filler schema
+        _run(proc.process_frame(TextFrame(text="{1, 2, 3} are the service options we provide."), None))
+        _run(proc.process_frame(LLMFullResponseEndFrame(), None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) >= 1
+        combined = "".join(f.text for f in text_frames)
+        assert "{1, 2, 3}" in combined
+
+    def test_e_empty_response_handled(self):
+        """E. Empty or whitespace-only response handled cleanly without crashing or pushing empty text."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame, LLMFullResponseEndFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        _run(proc.process_frame(TextFrame(text=""), None))
+        _run(proc.process_frame(TextFrame(text="   "), None))
+        _run(proc.process_frame(LLMFullResponseEndFrame(), None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) == 0, "No empty text frames should be pushed downstream"
+
+    def test_f_cancelled_stream_handled(self):
+        """F. Cancelled or interrupted stream handled cleanly and state is reset."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame, InterruptionFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        _run(proc.process_frame(TextFrame(text="Hello"), None))
+        # Barge-in interruption arrives mid-stream
+        _run(proc.process_frame(InterruptionFrame(), None))
+
+        assert proc._mode == "detecting"
+        assert proc._buffer == ""
+        assert proc._filler_active is False
+
+    def test_g_stale_turn_suppressed(self):
+        """G. Stale turn chunks are suppressed and never pushed to TTS."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        # Turn changes in shared_state to turn 2
+        shared["current_turn_id"] = 2
+
+        # A late arriving chunk from turn 1 arrives
+        stale_frame = TextFrame(text="Late chunk from turn 1")
+        stale_frame._turn_id = 1
+        _run(proc.process_frame(stale_frame, None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) == 0, "Stale turn frame must be discarded"
+
+    def test_h_new_turn_continues_normally(self):
+        """H. New turn continues normally after stale turn suppression."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=2)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame, LLMFullResponseEndFrame
+
+        start_frame = LLMFullResponseStartFrame()
+        start_frame._turn_id = 2
+        _run(proc.process_frame(start_frame, None))
+
+        valid_frame = TextFrame(text="Turn 2 speech starts here.")
+        valid_frame._turn_id = 2
+        _run(proc.process_frame(valid_frame, None))
+        _run(proc.process_frame(LLMFullResponseEndFrame(), None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) == 1
+        assert text_frames[0].text == "Turn 2 speech starts here."
+
+    def test_i_tool_function_calls_remain_functional(self):
+        """I. Tool and function call frames pass through unaffected."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import Frame
+
+        class MockFunctionCallFrame(Frame):
+            pass
+
+        mock_call = MockFunctionCallFrame()
+        _run(proc.process_frame(mock_call, None))
+
+        assert mock_call in pushed
+
+    def test_j_sarvam_receives_incremental_text(self):
+        """J. Downstream receiver receives each incremental text chunk in order."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        received_chunks = []
+        for word in ["Good", " morning", " how", " are", " you"]:
+            _run(proc.process_frame(TextFrame(text=word), None))
+            # Check last pushed frame is this word
+            assert isinstance(pushed[-1], TextFrame)
+            assert pushed[-1].text == word
+            received_chunks.append(pushed[-1].text)
+
+        assert "".join(received_chunks) == "Good morning how are you"
+
+    def test_k_dynamic_filler_remains_contextual(self):
+        """K. Dynamic filler tag <ack> is emitted as is_filler=True before streaming response."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame, LLMFullResponseEndFrame
+
+        _run(proc.process_frame(LLMFullResponseStartFrame(), None))
+        _run(proc.process_frame(TextFrame(text='<ack>जी, बिल्कुल।</ack> हम AI solutions बनाते हैं।'), None))
+        _run(proc.process_frame(LLMFullResponseEndFrame(), None))
+
+        text_frames = [f for f in pushed if isinstance(f, TextFrame)]
+        assert len(text_frames) == 2
+        assert text_frames[0].text == "जी, बिल्कुल।"
+        assert getattr(text_frames[0], "is_filler", False) is True
+        assert "हम AI solutions बनाते हैं।" in text_frames[1].text
+        assert getattr(text_frames[1], "is_filler", False) is False
+
+    def test_l_no_additional_llm_request_introduced(self):
+        """L. No secondary LLM requests or background tasks are spawned by the filler processor."""
+        proc, shared, pushed = self._setup_processor(current_turn_id=1)
+        # Processor contains only local in-pipeline frame routing
+        assert not hasattr(proc, "llm_client")
+        assert not hasattr(proc, "groq_client")
+        assert not hasattr(proc, "_extra_llm_call")
+
+

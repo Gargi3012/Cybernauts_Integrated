@@ -162,15 +162,47 @@ async def trigger_outbound_call(payload: dict):
 
     company_context = payload.get("company_context") or payload.get("companyContext")
     import json
+    import uuid
     company_context_str = json.dumps(company_context) if isinstance(company_context, dict) else (company_context or None)
     lead_id = payload.get("lead_id")
+    session_id = payload.get("session_id") or f"sess_{uuid.uuid4().hex[:12]}"
+    dispatch_id = payload.get("dispatch_id") or f"disp_{uuid.uuid4().hex[:12]}"
     transport_mode = os.getenv("TRANSPORT_MODE", "plivo").lower()
+
+    # Call Prompt / Script Validation and Registration
+    from app.services.call_config_registry import CallPromptConfig, call_config_registry
+    prompt_config = None
+    raw_prompt = payload.get("call_prompt")
+    if raw_prompt is not None and str(raw_prompt).strip():
+        try:
+            prompt_config = CallPromptConfig(
+                call_prompt=str(raw_prompt),
+                objective=payload.get("objective"),
+                custom_qualification_criteria=payload.get("custom_qualification_criteria") or [],
+            )
+            call_config_registry.set(
+                session_id=session_id,
+                config=prompt_config,
+                dispatch_id=dispatch_id,
+            )
+        except ValueError as val_err:
+            raise HTTPException(status_code=422, detail=str(val_err))
+        except Exception as p_err:
+            raise HTTPException(status_code=422, detail=f"Invalid call_prompt: {p_err}")
 
     try:
         if transport_mode == "twilio":
             from Pillar_2.outbound_call import place_outbound_call
             call_sid = await asyncio.to_thread(place_outbound_call, phone_number, company_context_str)
-            return {"status": "success", "callSid": call_sid, "call_id": call_sid, "provider": "twilio"}
+            return {
+                "status": "success",
+                "callSid": call_sid,
+                "call_id": call_sid,
+                "provider": "twilio",
+                "session_id": session_id,
+                "dispatch_id": dispatch_id,
+                "call_prompt_attached": bool(prompt_config is not None),
+            }
         else:
             try:
                 from Pillar_2.outbound_call import place_outbound_call
@@ -178,15 +210,54 @@ async def trigger_outbound_call(payload: dict):
                     place_outbound_call,
                     phone_number,
                     company_context=company_context_str,
-                    lead_id=lead_id
+                    lead_id=lead_id,
+                    session_id=session_id,
+                    dispatch_id=dispatch_id,
                 )
             except Exception:
                 from Pillar_2.plivo_outbound import place_plivo_outbound_call
                 call_id = await asyncio.to_thread(place_plivo_outbound_call, phone_number, company_context_str)
-            return {"status": "success", "callSid": call_id, "call_id": call_id, "provider": "plivo"}
+            return {
+                "status": "success",
+                "callSid": call_id,
+                "call_id": call_id,
+                "provider": "plivo",
+                "session_id": session_id,
+                "dispatch_id": dispatch_id,
+                "call_prompt_attached": bool(prompt_config is not None),
+            }
     except Exception as e:
+        if prompt_config:
+            call_config_registry.delete(session_id=session_id, dispatch_id=dispatch_id, reason="dispatch_failed")
         logger.exception(f"Failed to place outbound call via {transport_mode}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/telephony/hangup")
+@router.post("/api/plivo/hangup-call")
+async def manual_telephony_hangup(payload: dict):
+    """Explicitly hang up an active Plivo carrier phone call."""
+    call_id = payload.get("call_id") or payload.get("callSid") or payload.get("call_uuid")
+    auth_id = os.getenv("PLIVO_AUTH_ID")
+    auth_token = os.getenv("PLIVO_AUTH_TOKEN")
+
+    if not call_id:
+        raise HTTPException(status_code=400, detail="call_id is required")
+
+    if not auth_id or not auth_token:
+        raise HTTPException(status_code=500, detail="Plivo credentials not configured")
+
+    try:
+        import aiohttp
+        endpoint = f"https://api.plivo.com/v1/Account/{auth_id}/Call/{call_id}/"
+        async with aiohttp.ClientSession() as session:
+            auth = aiohttp.BasicAuth(auth_id, auth_token)
+            async with session.delete(endpoint, auth=auth) as resp:
+                logger.info(f"Manual hangup executed for call_id={call_id}: HTTP {resp.status}")
+                return {"status": "success", "call_id": call_id, "http_status": resp.status}
+    except Exception as err:
+        logger.error(f"Manual hangup failed for {call_id}: {err}")
+        raise HTTPException(status_code=500, detail=str(err))
 
 
 @router.get("/api/call-history")
