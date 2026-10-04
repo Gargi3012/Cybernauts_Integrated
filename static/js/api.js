@@ -170,6 +170,13 @@ const api = {
     }
   },
 
+  async hangupCall(callId) {
+    return fetchJSON("/api/telephony/hangup", {
+      method: "POST",
+      body: { call_id: callId }
+    });
+  },
+
   async getCallHistory() {
     return fetchJSON("/api/call-history");
   },

@@ -202,7 +202,14 @@ def validate_plivo_request(request: Request, form_dict: dict) -> bool:
             return True
         return False
 
-    public_url = (SERVER_BASE_URL or PUBLIC_BASE_URL or os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
+    host = request.headers.get("host", "")
+    proto = request.headers.get("x-forwarded-proto", "https" if "ngrok" in host else "http")
+    public_url = ""
+    if host and ("ngrok" in host or ("." in host and not host.startswith("localhost") and not host.startswith("127.0.0.1"))):
+        public_url = f"{proto}://{host}"
+    else:
+        public_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL") or SERVER_BASE_URL or PUBLIC_BASE_URL or "").rstrip("/")
+
     if public_url:
         validator_url = f"{public_url}{request.url.path}"
         if request.url.query:
@@ -232,6 +239,11 @@ def validate_plivo_request(request: Request, form_dict: dict) -> bool:
     except Exception as e:
         logger.warning(f"Error executing Plivo signature validation: {e}")
         return False
+
+
+# ── In-Memory Stream Registry for Zero-Latency Deduplication & Lock ──
+_ACTIVE_STREAMS: set = set()
+_ACTIVE_STREAMS_LOCK: asyncio.Lock = asyncio.Lock()
 
 
 @app.api_route("/plivo/inbound-call", methods=["GET", "POST"])
@@ -280,34 +292,50 @@ async def handle_plivo_inbound_call(request: Request):
     domain = form_dict.get("domain") or request.query_params.get("domain", "")
     session_id = form_dict.get("session_id") or request.query_params.get("session_id", "")
     dispatch_id = form_dict.get("dispatch_id") or request.query_params.get("dispatch_id", "")
+    company_context_raw = form_dict.get("company_context") or request.query_params.get("company_context", "")
 
-    # ── Database Pre-fetch ───────────────────────────────────────────────
-    from app.db.connection import db_manager
-    from app.repositories.client_repository import ClientRepository
-    from app.repositories.session_repository import SessionRepository
+    is_outbound = bool(lead_id or domain or session_id or dispatch_id or company_context_raw)
 
     client_id_str = ""
     previous_summary = ""
 
-    try:
-        async def fetch_db():
-            import asyncio
-            for attempt in range(2):
+    # ── Database Pre-fetch (Non-Blocking on Critical Path) ───────────────
+    # On outbound lead qualification calls, the call prompt, sales objective, and lead
+    # company context are already authoritatively held in CallConfigRegistry / local state.
+    # Remote Neon PostgreSQL MUST NOT block the answer webhook critical path.
+    if is_outbound:
+        logger.info(f"Outbound qualification call detected | lead={lead_id or domain} | session={session_id} | dispatch={dispatch_id}. Bypassing synchronous remote DB pre-fetch.")
+        # Non-critical: sync client record in background asynchronously for post-call audit/analytics
+        if phone_number and phone_number != "unknown_client":
+            async def _bg_sync_client():
                 try:
+                    from app.db.connection import db_manager
+                    from app.repositories.client_repository import ClientRepository
                     async with db_manager.get_session() as db:
-                        client = await ClientRepository.get_or_create_client(db, phone_number)
-                        summary_text = await SessionRepository.get_summary(db, client.id)
-                        return str(client.id), summary_text
-                except Exception as db_err:
-                    if attempt == 1:
-                        raise db_err
-                    await asyncio.sleep(0.5)
+                        await ClientRepository.get_or_create_client(db, phone_number)
+                except Exception as bg_e:
+                    logger.debug(f"Background client sync notice: {bg_e}")
+            asyncio.create_task(_bg_sync_client())
+    else:
+        # Inbound general call: attempt quick single fetch with tight non-blocking timeout
+        from app.db.connection import db_manager
+        from app.repositories.client_repository import ClientRepository
+        from app.repositories.session_repository import SessionRepository
 
-        client_id_str, summary_text = await asyncio.wait_for(fetch_db(), timeout=3.0)
-        if summary_text:
-            previous_summary = summary_text
-    except Exception as e:
-        logger.error(f"Failed DB pre-fetch for Plivo call: {e}")
+        try:
+            async def fetch_db_quick():
+                async with db_manager.get_session() as db:
+                    client = await ClientRepository.get_or_create_client(db, phone_number)
+                    summary_text = await SessionRepository.get_summary(db, client.id)
+                    return str(client.id), summary_text
+
+            client_id_str, summary_text = await asyncio.wait_for(fetch_db_quick(), timeout=0.25)
+            if summary_text:
+                previous_summary = summary_text
+        except asyncio.TimeoutError:
+            logger.info("Inbound DB pre-fetch exceeded 250ms threshold. Proceeding with immediate greeting.")
+        except Exception as e:
+            logger.debug(f"DB pre-fetch notice for inbound call: {e}")
 
     import urllib.parse
     phone_encoded = urllib.parse.quote(phone_number)
@@ -315,14 +343,17 @@ async def handle_plivo_inbound_call(request: Request):
     call_id_encoded = urllib.parse.quote(call_id)
 
     # Resolve the host for the websocket stream
-    import os
-    public_url = os.getenv("SERVER_BASE_URL") or os.getenv("PUBLIC_BASE_URL", "")
-    if public_url:
-        stream_base = public_url.replace("http://", "ws://").replace("https://", "wss://")
-    else:
-        host = request.headers.get("host", "localhost:8000")
-        scheme = "wss" if "ngrok" in host or request.headers.get("x-forwarded-proto") == "https" else "ws"
+    host = request.headers.get("host", "")
+    proto = request.headers.get("x-forwarded-proto", "https" if "ngrok" in host else "http")
+    scheme = "wss" if proto == "https" or "ngrok" in host else "ws"
+    if host and ("ngrok" in host or ("." in host and not host.startswith("localhost") and not host.startswith("127.0.0.1"))):
         stream_base = f"{scheme}://{host}"
+    else:
+        public_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL", "")).rstrip("/")
+        if public_url:
+            stream_base = public_url.replace("http://", "ws://").replace("https://", "wss://")
+        else:
+            stream_base = f"{scheme}://{host or 'localhost:8000'}"
 
     extra_headers = f"phone={phone_number};client_id={client_id_str};call_id={call_id};previous_summary={xml_escape(previous_summary)}"
 
@@ -343,10 +374,15 @@ async def handle_plivo_inbound_call(request: Request):
             query_params.append(f"session_id={urllib.parse.quote(session_id)}")
         if dispatch_id:
             query_params.append(f"dispatch_id={urllib.parse.quote(dispatch_id)}")
+        if company_context_raw:
+            query_params.append(f"company_context={urllib.parse.quote(company_context_raw)}")
         stream_url = f"{stream_base}/ws?{'&amp;'.join(query_params)}"
     else:
         # Standard telephony stream routing to /ws/plivo
-        stream_url = f"{stream_base}/ws/plivo?phone={phone_encoded}&amp;client_id={client_id_encoded}&amp;call_id={call_id_encoded}"
+        plivo_params = [f"phone={phone_encoded}", f"client_id={client_id_encoded}", f"call_id={call_id_encoded}"]
+        if company_context_raw:
+            plivo_params.append(f"company_context={urllib.parse.quote(company_context_raw)}")
+        stream_url = f"{stream_base}/ws/plivo?{'&amp;'.join(plivo_params)}"
 
     plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -362,6 +398,24 @@ async def handle_plivo_inbound_call(request: Request):
 async def handle_plivo_hangup(request: Request):
     """Callback triggered by Plivo when call completes."""
     logger.info("Plivo call hangup callback received.")
+    lead_id = request.query_params.get("lead_id")
+    if not lead_id:
+        try:
+            form = await request.form()
+            lead_id = form.get("lead_id")
+        except Exception:
+            pass
+    if lead_id:
+        try:
+            from database.repository import LeadRepository
+            from database.connection import get_db_path
+            repo = LeadRepository(get_db_path())
+            lead = repo.get_lead_by_id_or_domain(lead_id)
+            if lead and lead.call_status in ["initiating", "initiated", "ringing", "in_progress"]:
+                repo.update_lead_qualification(lead_id, {"call_status": "completed"})
+                logger.info(f"Updated lead {lead_id} call_status to completed via Plivo hangup callback.")
+        except Exception as e:
+            logger.warning(f"Could not update lead status on Plivo hangup: {e}")
     return {"status": "hangup_recorded"}
 
 
@@ -387,26 +441,28 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg.get("event") == "start":
                 start_obj = msg.get("start", {})
                 stream_sid = start_obj.get("streamId") or start_obj.get("streamSid") or start_obj.get("callId")
+                # In-memory atomic stream ownership claim (0.01ms, non-blocking)
+                async with _ACTIVE_STREAMS_LOCK:
+                    if stream_sid in _ACTIVE_STREAMS:
+                        logger.warning(f"Duplicate WebSocket connection for stream {stream_sid}. Already active. Rejecting.")
+                        await websocket.close()
+                        return
+                    _ACTIVE_STREAMS.add(stream_sid)
 
-                # Prevention of duplicate session creation via Postgres atomic insert
-                from sqlalchemy.exc import IntegrityError
-                from app.db.connection import db_manager
-                from app.db.models import ActiveStream
-                import os
-
-                try:
-                    async def claim_stream():
+                # Asynchronously persist stream claim to distributed DB in background (non-blocking)
+                async def _claim_stream_bg(s_sid: str):
+                    try:
+                        from app.db.connection import db_manager
+                        from app.db.models import ActiveStream
+                        import os
                         async with db_manager.get_session() as db:
                             worker_id = str(os.getpid())
-                            active_stream = ActiveStream(stream_sid=stream_sid, worker_id=worker_id)
+                            active_stream = ActiveStream(stream_sid=s_sid, worker_id=worker_id)
                             db.add(active_stream)
                             await db.flush()
-                    await asyncio.wait_for(claim_stream(), timeout=1.0)
-                except IntegrityError:
-                    logger.warning(f"[Worker-{os.getpid()}] Duplicate WebSocket connection for stream {stream_sid}. Already claimed by another worker. Rejecting.")
-                    return
-                except Exception as e:
-                    logger.warning(f"[Worker-{os.getpid()}] Stream ownership claim skipped/timed-out for {stream_sid}: {e}. Proceeding with call.")
+                    except Exception as claim_err:
+                        logger.debug(f"Background stream persistence notice for {s_sid}: {claim_err}")
+                asyncio.create_task(_claim_stream_bg(stream_sid))
 
                 logger.info(f"[Worker-{os.getpid()}] Successfully claimed ownership of stream {stream_sid}")
 
@@ -486,8 +542,11 @@ async def websocket_endpoint(websocket: WebSocket):
         auth_token=os.getenv("PLIVO_AUTH_TOKEN"),
     )
 
-    # ── Database Pre-fetch FALLBACK ──
-    if not previous_summary and (client_id_str or phone_number != "unknown_client"):
+    # ── Database Pre-fetch FALLBACK (Non-blocking on Outbound Critical Path) ──
+    # On outbound calls with known lead/session context, call script / company context
+    # is authoritative. Remote Neon DB is never on the critical path.
+    is_outbound_ws = bool(lead_id or domain or session_id_val or dispatch_id_val or company_context)
+    if not is_outbound_ws and not previous_summary and (client_id_str or phone_number != "unknown_client"):
         try:
             from app.db.connection import db_manager
             from app.repositories.session_repository import SessionRepository
@@ -506,14 +565,14 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     return await SessionRepository.get_summary(db, client_uuid)
 
-            summary_text = await asyncio.wait_for(fetch_db_ws(), timeout=1.0)
+            summary_text = await asyncio.wait_for(fetch_db_ws(), timeout=0.25)
             if summary_text:
                 logger.info(f"Retrieved DB summary for {client_id_str}: {summary_text[:50]}...")
                 previous_summary = summary_text
         except asyncio.TimeoutError:
-            logger.info("DB pre-fetch timed out (1.0s) in websocket. Proceeding without context.")
+            logger.info("DB pre-fetch threshold reached in websocket. Proceeding immediately with voice session.")
         except Exception as e:
-            logger.error(f"Failed to fetch summary in websocket: {e}")
+            logger.debug(f"DB fallback fetch notice in websocket: {e}")
 
     # Block and run the voice session on this websocket
     try:
@@ -542,18 +601,22 @@ async def websocket_endpoint(websocket: WebSocket):
         except Exception as close_err:
             logger.warning(f"Error while closing Plivo WebSocket: {close_err}")
             
-        # Cleanup of abandoned streams from distributed store
+        # Cleanup stream ownership from in-memory lock and distributed store
         if stream_sid:
-            try:
-                from sqlalchemy import delete
-                from app.db.connection import db_manager
-                from app.db.models import ActiveStream
-                async with db_manager.get_session() as db:
-                    await db.execute(delete(ActiveStream).where(ActiveStream.stream_sid == stream_sid))
-                import os
-                logger.info(f"[Worker-{os.getpid()}] Released distributed ownership for stream {stream_sid}")
-            except Exception as e:
-                logger.error(f"Failed to cleanup active stream {stream_sid} from DB: {e}")
+            async with _ACTIVE_STREAMS_LOCK:
+                _ACTIVE_STREAMS.discard(stream_sid)
+
+            async def _cleanup_active_stream_bg(s_sid: str):
+                try:
+                    from sqlalchemy import delete
+                    from app.db.connection import db_manager
+                    from app.db.models import ActiveStream
+                    async with db_manager.get_session() as db:
+                        await db.execute(delete(ActiveStream).where(ActiveStream.stream_sid == s_sid))
+                    logger.info(f"Released distributed ownership for stream {s_sid}")
+                except Exception as e:
+                    logger.debug(f"Background active stream cleanup notice: {e}")
+            asyncio.create_task(_cleanup_active_stream_bg(stream_sid))
 
 
 @app.websocket("/ws/plivo")
@@ -572,8 +635,20 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
     call_id = websocket.query_params.get("call_id", "")
     phone_number = websocket.query_params.get("phone", "unknown_client")
     client_id_str = websocket.query_params.get("client_id", "")
-    company_context = ""
+    lead_id = websocket.query_params.get("lead_id", "") or websocket.query_params.get("domain", "")
+    session_id_val = websocket.query_params.get("session_id", "")
+    dispatch_id_val = websocket.query_params.get("dispatch_id", "")
+    company_context = None
     previous_summary = ""
+
+    company_ctx_param = websocket.query_params.get("company_context", "")
+    if company_ctx_param:
+        try:
+            import urllib.parse
+            decoded_ctx = urllib.parse.unquote(company_ctx_param)
+            company_context = json.loads(decoded_ctx)
+        except Exception:
+            company_context = {"company_name": company_ctx_param}
 
     import json
     import asyncio
@@ -603,26 +678,37 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
                                 client_id_str = v
                             elif k == "call_id" and not call_id:
                                 call_id = v
+                            elif k == "lead_id" and not lead_id:
+                                lead_id = v
+                            elif k == "session_id" and not session_id_val:
+                                session_id_val = v
+                            elif k == "dispatch_id" and not dispatch_id_val:
+                                dispatch_id_val = v
                             elif k == "previous_summary" and not previous_summary:
                                 previous_summary = v
 
-                # Prevention of duplicate session creation via Postgres atomic insert
-                from sqlalchemy.exc import IntegrityError
-                from app.db.connection import db_manager
-                from app.db.models import ActiveStream
-                import os
+                # In-memory atomic stream ownership claim (0.01ms, non-blocking)
+                async with _ACTIVE_STREAMS_LOCK:
+                    if stream_id in _ACTIVE_STREAMS:
+                        logger.warning(f"Duplicate Plivo WS connection for stream {stream_id}. Already active. Rejecting.")
+                        await websocket.close()
+                        return
+                    _ACTIVE_STREAMS.add(stream_id)
 
-                try:
-                    async with db_manager.get_session() as db:
-                        worker_id = str(os.getpid())
-                        active_stream = ActiveStream(stream_sid=stream_id, worker_id=worker_id)
-                        db.add(active_stream)
-                        await db.flush()
-                except IntegrityError:
-                    logger.warning(f"[Worker-{os.getpid()}] Duplicate Plivo WS connection for stream {stream_id}. Rejecting.")
-                    return
-                except Exception as e:
-                    logger.error(f"[Worker-{os.getpid()}] Failed to claim stream ownership for {stream_id}: {e}. Proceeding anyway...")
+                # Asynchronously persist stream claim to distributed DB in background (non-blocking)
+                async def _claim_plivo_stream_bg(s_id: str):
+                    try:
+                        from app.db.connection import db_manager
+                        from app.db.models import ActiveStream
+                        import os
+                        async with db_manager.get_session() as db:
+                            worker_id = str(os.getpid())
+                            active_stream = ActiveStream(stream_sid=s_id, worker_id=worker_id)
+                            db.add(active_stream)
+                            await db.flush()
+                    except Exception as claim_err:
+                        logger.debug(f"Background stream persistence notice for {s_id}: {claim_err}")
+                asyncio.create_task(_claim_plivo_stream_bg(stream_id))
 
                 logger.info(f"[Worker-{os.getpid()}] Successfully claimed ownership of Plivo stream {stream_id}")
                 first_audio_packet = time.perf_counter()
@@ -657,8 +743,9 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
         auth_token=PLIVO_AUTH_TOKEN,
     )
 
-    # Database Pre-fetch FALLBACK
-    if not previous_summary and (client_id_str or phone_number != "unknown_client"):
+    # ── Database Pre-fetch FALLBACK (Non-blocking on Outbound Critical Path) ──
+    is_outbound_ws = bool(lead_id or session_id_val or dispatch_id_val or company_context)
+    if not is_outbound_ws and not previous_summary and (client_id_str or phone_number != "unknown_client"):
         try:
             from app.db.connection import db_manager
             from app.repositories.session_repository import SessionRepository
@@ -676,12 +763,14 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
                         client_id_str = str(client_uuid)
                     return await SessionRepository.get_summary(db, client_uuid)
 
-            summary_text = await asyncio.wait_for(fetch_db_ws(), timeout=3.0)
+            summary_text = await asyncio.wait_for(fetch_db_ws(), timeout=0.25)
             if summary_text:
                 logger.info(f"Retrieved DB summary for Plivo client {client_id_str}: {summary_text[:50]}...")
                 previous_summary = summary_text
+        except asyncio.TimeoutError:
+            logger.info("DB pre-fetch threshold reached in Plivo websocket. Proceeding immediately with voice session.")
         except Exception as e:
-            logger.error(f"Failed to fetch summary in Plivo websocket: {e}")
+            logger.debug(f"DB fallback fetch notice in Plivo websocket: {e}")
 
     # Block and run the voice session on this websocket
     try:
@@ -689,9 +778,13 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
             transport=transport,
             phone_number=phone_number,
             company_context=company_context,
+            lead_id=lead_id,
+            provider_call_id=call_id,
             client_id_str=client_id_str,
             previous_summary=previous_summary,
             connection_metrics=connection_metrics,
+            session_id=session_id_val,
+            dispatch_id=dispatch_id_val,
         )
     except WebSocketDisconnect as e:
         logger.warning(f"Plivo WebSocket disconnected in endpoint: code={e.code}, reason={e.reason}")
@@ -706,18 +799,23 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
         except Exception as close_err:
             logger.warning(f"Error while closing Plivo WebSocket: {close_err}")
 
-        # Cleanup of abandoned streams from distributed store
+        # Cleanup stream ownership from in-memory lock and distributed store
         if stream_id:
-            try:
-                from sqlalchemy import delete
-                from app.db.connection import db_manager
-                from app.db.models import ActiveStream
-                async with db_manager.get_session() as db:
-                    await db.execute(delete(ActiveStream).where(ActiveStream.stream_sid == stream_id))
-                import os
-                logger.info(f"[Worker-{os.getpid()}] Released distributed ownership for Plivo stream {stream_id}")
-            except Exception as e:
-                logger.error(f"Failed to cleanup active stream {stream_id} from DB: {e}")
+            async with _ACTIVE_STREAMS_LOCK:
+                _ACTIVE_STREAMS.discard(stream_id)
+
+            async def _cleanup_plivo_stream_bg(s_id: str):
+                try:
+                    from sqlalchemy import delete
+                    from app.db.connection import db_manager
+                    from app.db.models import ActiveStream
+                    async with db_manager.get_session() as db:
+                        await db.execute(delete(ActiveStream).where(ActiveStream.stream_sid == s_id))
+                    import os
+                    logger.info(f"[Worker-{os.getpid()}] Released distributed ownership for Plivo stream {s_id}")
+                except Exception as e:
+                    logger.debug(f"Background active stream cleanup notice: {e}")
+            asyncio.create_task(_cleanup_plivo_stream_bg(stream_id))
 
 
 # ── Core Pipeline Session ───────────────────────────────────────────────
@@ -738,32 +836,50 @@ async def run_voice_session(
     from app.db.connection import db_manager
     from app.repositories.session_repository import SessionRepository
 
+    # ── 0. Call Prompt Configuration Resolution (Phase 5) ─────────────
+    from app.services.call_config_registry import call_config_registry, CallPromptConfig
+    call_prompt_config: Optional[CallPromptConfig] = None
+    if session_id:
+        call_prompt_config = call_config_registry.get(session_id)
+    if not call_prompt_config and dispatch_id:
+        call_prompt_config = call_config_registry.get_by_dispatch(dispatch_id)
+
+    sess_metadata = {
+        "client_id": client_id_str,
+        "previous_summary": previous_summary,
+        "company_context": company_context or {},
+        "lead_id": lead_id or "",
+        "provider_call_id": provider_call_id or "",
+        "phone_number": phone_number,
+        "dispatch_id": dispatch_id or "",
+        "has_call_prompt": bool(call_prompt_config is not None),
+    }
+    if call_prompt_config:
+        sess_metadata["call_prompt_len"] = len(call_prompt_config.call_prompt)
+        sess_metadata["call_objective"] = call_prompt_config.objective or ""
+        sess_metadata["call_criteria"] = call_prompt_config.custom_qualification_criteria or []
+
     # ── 1. Session ──────────────────────────────────────────────────────
     session_manager = SessionManager()
     session = await session_manager.create_session(
         session_id=session_id,
-        metadata={
-            "client_id": client_id_str,
-            "previous_summary": previous_summary,
-            "company_context": company_context or {},
-            "lead_id": lead_id or "",
-            "provider_call_id": provider_call_id or "",
-            "phone_number": phone_number,
-            "dispatch_id": dispatch_id or "",
-        }
+        metadata=sess_metadata,
     )
     session_id = session.session_id
     masked_phone = f"{phone_number[:3]}******{phone_number[-4:]}" if len(phone_number) > 7 and phone_number != "unknown_client" else phone_number
-    logger.info("Session created | session_id={sid} | client={client}", sid=session_id, client=masked_phone)
+    logger.info("Session created | session_id={sid} | client={client} | custom_prompt={has_p}", 
+                sid=session_id, client=masked_phone, has_p=bool(call_prompt_config is not None))
     
-    # Persist the Session in DB
+    # Persist the Session in DB (Non-blocking background task)
     if client_id_str:
-        try:
-            c_id = uuid.UUID(client_id_str)
-            async with db_manager.get_session() as db:
-                await SessionRepository.create_session(db, session_id, c_id)
-        except Exception as e:
-            logger.error(f"Failed to persist Session: {e}")
+        async def _persist_session_bg(s_id: str, c_id_str: str):
+            try:
+                c_id = uuid.UUID(c_id_str)
+                async with db_manager.get_session() as db:
+                    await SessionRepository.create_session(db, s_id, c_id)
+            except Exception as e:
+                logger.error(f"Failed to persist Session in background: {e}")
+        asyncio.create_task(_persist_session_bg(session_id, client_id_str))
 
     # ── 2. Event Bus ────────────────────────────────────────────────────
     event_bus = EventBus()
@@ -928,6 +1044,9 @@ async def run_voice_session(
                 except Exception as q_err:
                     logger.error(f"Failed to update Team A lead qualification for {lead_ref}: {q_err}")
 
+            # Evict ephemeral call configuration on session close (Phase 14)
+            call_config_registry.delete(session_id=event.session_id, dispatch_id=sess_data.metadata.get("dispatch_id"), reason="session_closed")
+
     sub_ids = []
     sub_ids.append(await event_bus.subscribe("SessionClosed", on_session_closed))
                 
@@ -1089,6 +1208,7 @@ async def run_voice_session(
         previous_summary=previous_summary,
         company_context=company_context,
         lead_id=lead_id,
+        call_prompt_config=call_prompt_config,
     )
     logger.info("PipecatAdapter ready | execution_id={eid}", eid=execution_id)
 
@@ -1158,6 +1278,9 @@ async def run_voice_session(
         # Delete session from temporary SessionManager RAM store (Neon DB records remain saved)
         await session_manager.delete_session(session_id)
         logger.info("Session closed and temporary RAM cleaned | session_id={sid}", sid=session_id)
+        
+        # Purge call config from registry on exit (Phase 14)
+        call_config_registry.delete(session_id=session_id, dispatch_id=dispatch_id, reason="pipeline_cleanup")
         
         # Dump latency profiles
         if connection_metrics:

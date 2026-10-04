@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional, Dict, List, Callable
 
 import os
 import importlib.util
@@ -31,7 +31,7 @@ class PipecatProcessorAdapter:
 
 try:
     from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-    from pipecat.frames.frames import StartFrame, SystemFrame
+    from pipecat.frames.frames import StartFrame, SystemFrame, Frame
     
     class ResilientSTTProcessor(FrameProcessor):
         """Proxy processor that delegates to primary STT and falls back to Whisper STT on error."""
@@ -90,8 +90,7 @@ try:
                     setup = FrameProcessorSetup(
                         clock=self._clock,
                         task_manager=self._task_manager,
-                        pipeline_worker=self._pipeline_worker,
-                        observer=self._observer,
+                        observer=getattr(self, "_observer", None),
                     )
                     await self.active_stt.setup(setup)
                     self.active_stt._FrameProcessor__started = True
@@ -114,6 +113,8 @@ try:
             self.fallback_factory = fallback_factory
             self.active_llm = primary_llm
             self.fallback_active = False
+            self._registered_functions: list[dict] = []
+            self._is_generating = False
 
         def link(self, processor):
             super().link(processor)
@@ -129,7 +130,136 @@ try:
             await super().cleanup()
             await self.active_llm.cleanup()
 
+        def register_function(
+            self,
+            function_name: Optional[str],
+            handler: Any,
+            start_callback=None,
+            *,
+            cancel_on_interruption: bool = True,
+            timeout_secs: Optional[float] = None,
+            **kwargs,
+        ):
+            """Register a function handler for LLM tool/function calls with safe delegation."""
+            import inspect
+
+            # Wrap handler if it expects (params, **kwargs) or (params, arg1, ...)
+            sig = inspect.signature(handler)
+            if len(sig.parameters) > 1:
+                async def unified_handler(params):
+                    args = getattr(params, "arguments", {}) or {}
+                    if not isinstance(args, dict):
+                        args = {}
+                    try:
+                        return await handler(params, **args)
+                    except TypeError:
+                        try:
+                            return await handler(**args)
+                        except TypeError:
+                            return await handler(params)
+                target_handler = unified_handler
+            else:
+                target_handler = handler
+
+            # Store registration for fallback replay
+            reg_entry = {
+                "function_name": function_name,
+                "handler": target_handler,
+                "raw_handler": handler,
+                "start_callback": start_callback,
+                "cancel_on_interruption": cancel_on_interruption,
+                "timeout_secs": timeout_secs,
+                "kwargs": kwargs,
+            }
+            self._registered_functions = [
+                r for r in self._registered_functions if r["function_name"] != function_name
+            ]
+            self._registered_functions.append(reg_entry)
+
+            if hasattr(self.active_llm, "register_function"):
+                return self.active_llm.register_function(
+                    function_name,
+                    target_handler,
+                    start_callback=start_callback,
+                    cancel_on_interruption=cancel_on_interruption,
+                    timeout_secs=timeout_secs,
+                    **kwargs,
+                )
+
+        def register_direct_function(
+            self,
+            handler: Any,
+            *,
+            cancel_on_interruption: bool = True,
+            timeout_secs: Optional[float] = None,
+            **kwargs,
+        ):
+            """Register a direct function handler."""
+            if hasattr(self.active_llm, "register_direct_function"):
+                return self.active_llm.register_direct_function(
+                    handler,
+                    cancel_on_interruption=cancel_on_interruption,
+                    timeout_secs=timeout_secs,
+                    **kwargs,
+                )
+            name = getattr(handler, "__name__", None)
+            return self.register_function(
+                name,
+                handler,
+                cancel_on_interruption=cancel_on_interruption,
+                timeout_secs=timeout_secs,
+                **kwargs,
+            )
+
+        def has_function(self, function_name: str) -> bool:
+            """Check if a function handler is registered."""
+            if hasattr(self.active_llm, "has_function"):
+                return self.active_llm.has_function(function_name)
+            return any(
+                r["function_name"] == function_name or r["function_name"] is None
+                for r in self._registered_functions
+            )
+
+        def unregister_function(self, function_name: str):
+            """Unregister a function handler."""
+            self._registered_functions = [
+                r for r in self._registered_functions if r["function_name"] != function_name
+            ]
+            if hasattr(self.active_llm, "unregister_function"):
+                return self.active_llm.unregister_function(function_name)
+
+        def get_function_handler(self, function_name: str) -> Optional[Any]:
+            """Retrieve the registered handler for a function."""
+            if hasattr(self.active_llm, "_functions") and function_name in self.active_llm._functions:
+                item = self.active_llm._functions[function_name]
+                return getattr(item, "handler", item)
+            for r in self._registered_functions:
+                if r["function_name"] == function_name:
+                    return r["handler"]
+            return None
+
+        def __getattr__(self, name: str) -> Any:
+            """Safely delegate any missing attribute or method to the active LLM."""
+            if "active_llm" in self.__dict__:
+                return getattr(self.active_llm, name)
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
         async def process_frame(self, frame, direction):
+            # Track generation state for interruption observability
+            from pipecat.frames.frames import (
+                LLMFullResponseStartFrame,
+                LLMFullResponseEndFrame,
+                InterruptionFrame,
+            )
+            if isinstance(frame, LLMFullResponseStartFrame):
+                self._is_generating = True
+            elif isinstance(frame, LLMFullResponseEndFrame):
+                self._is_generating = False
+            elif isinstance(frame, InterruptionFrame):
+                if self._is_generating:
+                    logger.info("[INTERRUPTION_DIAGNOSTICS] LLM_STREAM_CANCELLED | Active generation cancelled by InterruptionFrame")
+                    self._is_generating = False
+
             # Ensure the active LLM is correctly wired for upstream frames
             if self.active_llm._prev != self._prev:
                 self.active_llm._prev = self._prev
@@ -155,20 +285,38 @@ try:
                 self.fallback_active = True
                 try:
                     self.active_llm = self.fallback_factory()
-                    self.active_llm.link(self._next)
-                    self.active_llm._prev = self._prev
+                    if hasattr(self.active_llm, "link") and hasattr(self, "_next") and self._next is not None:
+                        self.active_llm.link(self._next)
+                    if hasattr(self.active_llm, "_prev"):
+                        self.active_llm._prev = self._prev
                     
                     # Initialize fallback LLM variables and boot its tasks
-                    from pipecat.processors.frame_processor import FrameProcessorSetup
-                    setup = FrameProcessorSetup(
-                        clock=self._clock,
-                        task_manager=self._task_manager,
-                        pipeline_worker=self._pipeline_worker,
-                        observer=self._observer,
-                    )
-                    await self.active_llm.setup(setup)
-                    self.active_llm._FrameProcessor__started = True
+                    if hasattr(self.active_llm, "setup"):
+                        from pipecat.processors.frame_processor import FrameProcessorSetup
+                        setup = FrameProcessorSetup(
+                            clock=self._clock,
+                            task_manager=self._task_manager,
+                            observer=getattr(self, "_observer", None),
+                        )
+                        await self.active_llm.setup(setup)
+                        self.active_llm._FrameProcessor__started = True
                     
+                    # Replay registered function handlers onto fallback LLM
+                    for reg in self._registered_functions:
+                        if hasattr(self.active_llm, "register_function"):
+                            try:
+                                self.active_llm.register_function(
+                                    reg["function_name"],
+                                    reg["handler"],
+                                    start_callback=reg["start_callback"],
+                                    cancel_on_interruption=reg["cancel_on_interruption"],
+                                    timeout_secs=reg["timeout_secs"],
+                                    **reg["kwargs"],
+                                )
+                                logger.info(f"Re-registered function '{reg['function_name']}' on fallback LLM")
+                            except Exception as reg_err:
+                                logger.warning(f"Could not re-register function '{reg['function_name']}' on fallback LLM: {reg_err}")
+
                     # Replay StartFrame to start fallback LLM
                     if hasattr(self, "_start_frame"):
                         await self.active_llm.queue_frame(self._start_frame, FrameDirection.DOWNSTREAM)
@@ -191,6 +339,13 @@ class MockPipecatProcessor:
 
     def __init__(self, name: str) -> None:
         self.name = name
+        self._functions = {}
+
+    def register_function(self, name: Optional[str], handler: Any, **kwargs) -> None:
+        self._functions[name] = handler
+
+    def has_function(self, name: str) -> bool:
+        return name in self._functions or None in self._functions
 
 
 # ── Real service factory ──────────────────────────────────────────────
@@ -343,9 +498,7 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
                 )
 
         if LLM_PROVIDER.lower() == "openai":
-            from pipecat.services.openai.llm import OpenAILLMService
-            from pipecat.services.openai.base_llm import BaseOpenAILLMService
-            from app.config import OPENAI_API_KEY, OPENAI_MODEL
+            from app.config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_USE_RESPONSES
             
             if not OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY is not set in your .env file.")
@@ -354,11 +507,21 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
             extra_params = {}
             if any(x in model.lower() for x in ["gpt-5", "luna", "sol", "terra"]):
                 extra_params["reasoning_effort"] = "none"
-            llm = OpenAILLMService(
-                api_key=OPENAI_API_KEY,
-                settings=OpenAILLMService.Settings(model=model, extra=extra_params),
-            )
-            logger.info("OpenAILLMService created (resilient proxy) | model={m} | extra={e}", m=model, e=extra_params)
+
+            if OPENAI_USE_RESPONSES:
+                from pipecat.services.openai.responses.llm import OpenAIResponsesHttpLLMService
+                llm = OpenAIResponsesHttpLLMService(
+                    api_key=OPENAI_API_KEY,
+                    settings=OpenAIResponsesHttpLLMService.Settings(model=model, extra=extra_params),
+                )
+                logger.info("OpenAIResponsesHttpLLMService created (resilient proxy) | model={m} | extra={e}", m=model, e=extra_params)
+            else:
+                from pipecat.services.openai.llm import OpenAILLMService
+                llm = OpenAILLMService(
+                    api_key=OPENAI_API_KEY,
+                    settings=OpenAILLMService.Settings(model=model, extra=extra_params),
+                )
+                logger.info("OpenAILLMService created (resilient proxy) | model={m} | extra={e}", m=model, e=extra_params)
             return ResilientLLMProcessor(llm, fallback_llm_factory)
         else:
             from pipecat.services.groq.llm import GroqLLMService
@@ -427,21 +590,24 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
 
         elif provider == "cartesia":    
             from pipecat.services.cartesia.tts import CartesiaTTSService
-            from app.config import CARTESIA_API_KEY, CARTESIA_VOICE_ID
+            from app.adapters.pipecat.sarvam_tts_service import LowLatencyClauseAggregator, SarvamTTSService
+            from app.config import CARTESIA_API_KEY, CARTESIA_VOICE_ID, CARTESIA_MODEL, CARTESIA_LANGUAGE, SARVAM_API_KEY, SARVAM_TTS_VOICE, SARVAM_TTS_MODEL
 
             if not CARTESIA_API_KEY:
                 raise ValueError("CARTESIA_API_KEY is not set in your .env file.")
 
             voice_id = metadata.get("voice_id", CARTESIA_VOICE_ID)
+            model = metadata.get("model", CARTESIA_MODEL)
+            language = metadata.get("language", CARTESIA_LANGUAGE)
             tts = CartesiaTTSService(
                 api_key=CARTESIA_API_KEY,
-                voice_id=voice_id,
                 settings=CartesiaTTSService.Settings(
                     voice=voice_id,
-                    model="sonic-3.5",
-                    language="hi",
+                    model=model,
+                    language=language,
                 ),
                 sample_rate=sample_rate,
+                text_aggregator=LowLatencyClauseAggregator(),
             )
             
             # Monkey-patch _build_msg to disable timestamps because language 'hi' does not support them
@@ -451,8 +617,130 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
                 return orig_build_msg(*args, **kwargs)
             tts._build_msg = custom_build_msg
 
-            logger.info("CartesiaTTSService created | voice_id={v} | model=sonic-3.5 | language=hi (timestamps disabled)", v=voice_id)
-            return tts
+            logger.info(f"CartesiaTTSService created | voice_id={voice_id} | model={model} | language={language} (timestamps disabled)")
+
+            def fallback_sarvam_factory():
+                if not SARVAM_API_KEY:
+                    raise ValueError("SARVAM_API_KEY not configured for TTS fallback.")
+                s_voice = metadata.get("voice", metadata.get("voice_id", SARVAM_TTS_VOICE))
+                s_model = metadata.get("model", SARVAM_TTS_MODEL)
+                return SarvamTTSService(
+                    api_key=SARVAM_API_KEY,
+                    voice=s_voice,
+                    model=s_model,
+                    sample_rate=sample_rate,
+                )
+
+            class ResilientTTSProcessor(FrameProcessor):
+                """Proxy processor that delegates to primary Cartesia TTS and falls back to Sarvam TTS on 429/error."""
+                def __init__(self, primary_tts, fallback_factory):
+                    super().__init__()
+                    self.primary_tts = primary_tts
+                    self.fallback_factory = fallback_factory
+                    self.active_tts = primary_tts
+                    self.fallback_active = False
+                    self._start_frame = None
+                    self._current_turn_frames = []
+
+                    # Intercept 429 error frames pushed by primary TTS
+                    orig_push_error = primary_tts.push_error_frame
+                    async def intercept_error(error=None, *args, **kwargs):
+                        error_obj = error or (args[0] if args else kwargs.get("error"))
+                        err_text = str(getattr(error_obj, 'error', error_obj or ''))
+                        if '429' in err_text or 'concurrency limit' in err_text.lower() or 'rate limit' in err_text.lower():
+                            logger.warning(f"Intercepted Cartesia 429 error: {err_text}. Triggering session-scoped Sarvam fallback.")
+                            await self.trigger_tts_fallback(err_text)
+                            return
+                        if error_obj is not None:
+                            await orig_push_error(error_obj)
+                    primary_tts.push_error_frame = intercept_error
+
+                def link(self, processor):
+                    super().link(processor)
+                    self.primary_tts.link(processor)
+                    if self.fallback_active and self.active_tts:
+                        self.active_tts.link(processor)
+
+                async def setup(self, setup):
+                    await super().setup(setup)
+                    await self.primary_tts.setup(setup)
+
+                async def cleanup(self):
+                    await super().cleanup()
+                    await self.active_tts.cleanup()
+
+                async def trigger_tts_fallback(self, error):
+                    if not self.fallback_active:
+                        logger.error(f"Primary Cartesia TTS failed: {error}. Activating session-scoped Sarvam fallback!")
+                        self.fallback_active = True
+                        try:
+                            self.active_tts = self.fallback_factory()
+                            if hasattr(self.active_tts, 'link') and hasattr(self, '_next') and self._next is not None:
+                                self.active_tts.link(self._next)
+                            if hasattr(self.active_tts, '_prev'):
+                                self.active_tts._prev = self._prev
+
+                            if hasattr(self.active_tts, 'setup'):
+                                from pipecat.processors.frame_processor import FrameProcessorSetup
+                                setup = FrameProcessorSetup(
+                                    clock=self._clock,
+                                    task_manager=self._task_manager,
+                                    observer=getattr(self, '_observer', None),
+                                )
+                                await self.active_tts.setup(setup)
+                                self.active_tts._FrameProcessor__started = True
+
+                            if hasattr(self, '_start_frame') and self._start_frame is not None:
+                                await self.active_tts.process_frame(self._start_frame, FrameDirection.DOWNSTREAM)
+
+                            # Replay current turn frames onto fallback TTS so no speech is lost
+                            if self._current_turn_frames:
+                                replay_frames = list(self._current_turn_frames)
+                                self._current_turn_frames.clear()
+                                logger.info(f"Replaying {len(replay_frames)} turn frames onto Sarvam fallback TTS")
+                                for rf in replay_frames:
+                                    await self.active_tts.process_frame(rf, FrameDirection.DOWNSTREAM)
+
+                            try:
+                                await self.primary_tts._disconnect()
+                            except Exception:
+                                pass
+                            logger.info("Session-scoped Sarvam fallback successfully activated.")
+                        except Exception as fb_err:
+                            logger.error(f"Failed to activate Sarvam fallback: {fb_err}")
+
+                def __getattr__(self, name: str) -> Any:
+                    if "active_tts" in self.__dict__:
+                        return getattr(self.active_tts, name)
+                    raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+                async def process_frame(self, frame: Frame, direction: FrameDirection):
+                    if self.active_tts._prev != self._prev:
+                        self.active_tts._prev = self._prev
+
+                    if isinstance(frame, StartFrame):
+                        self._start_frame = frame
+
+                    from pipecat.frames.frames import (
+                        SystemFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TextFrame
+                    )
+                    if isinstance(frame, LLMFullResponseStartFrame):
+                        self._current_turn_frames = [frame]
+                    elif isinstance(frame, (TextFrame, LLMFullResponseEndFrame)):
+                        if self._current_turn_frames:
+                            self._current_turn_frames.append(frame)
+
+                    if isinstance(frame, SystemFrame):
+                        await super().process_frame(frame, direction)
+
+                    try:
+                        await self.active_tts.process_frame(frame, direction)
+                    except Exception as e:
+                        await self.trigger_tts_fallback(e)
+                        if self.fallback_active:
+                            await self.active_tts.process_frame(frame, direction)
+
+            return ResilientTTSProcessor(tts, fallback_sarvam_factory)
 
         elif provider == "sarvam":
             from app.adapters.pipecat.sarvam_tts_service import SarvamTTSService

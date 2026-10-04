@@ -25,6 +25,7 @@ class PipecatFactory:
         previous_summary: str = "",
         company_context: Optional[dict] = None,
         lead_id: Optional[str] = None,
+        call_prompt_config: Optional[Any] = None,
     ) -> PipecatAdapter:
         """Create and return a configured PipecatAdapter.
 
@@ -41,6 +42,7 @@ class PipecatFactory:
             previous_summary: Optional previous conversation summary.
             company_context: Optional Team A lead company context dictionary.
             lead_id:      Optional Team A lead identifier.
+            call_prompt_config: Optional call-specific prompt configuration.
         """
         return PipecatAdapter(
             pipeline=pipeline,
@@ -53,4 +55,5 @@ class PipecatFactory:
             previous_summary=previous_summary,
             company_context=company_context,
             lead_id=lead_id,
+            call_prompt_config=call_prompt_config,
         )

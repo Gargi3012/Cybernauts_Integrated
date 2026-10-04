@@ -44,7 +44,11 @@ _END_CALL_HIGH: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bi'?m\s+done\b", re.I), "i'm done"),
     (re.compile(r'\bno\s+more\s+questions?\b', re.I), "no more questions"),
     (re.compile(r'\ball\s+set\b', re.I), "all set"),
+    # Explicit call termination requests
+    (re.compile(r'\b(hang\s*up|disconnect(\s*the\s*call)?|end\s*(the|this)?\s*call|cut\s*(the|this)?\s*call)\b', re.I), "hang up"),
     # Hindi / Hinglish
+    (re.compile(r'\b(call\s*(cut|end|disconnect)\s*kar\s*(do|de|dijiye|dena))\b', re.I), "call cut kar do"),
+    (re.compile(r'\b(phone\s*(kaat|rakh)\s*(do|de|dijiye|dena))\b', re.I), "phone kaat do"),
     (re.compile(r'\balvida\b', re.I), "alvida"),
     (re.compile(r'\btas\s+alla?\b', re.I), "tak alla"),
     (re.compile(r'\bbas\s+itna\s+hi\b', re.I), "bas itna hi"),

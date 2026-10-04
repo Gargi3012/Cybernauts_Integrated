@@ -267,8 +267,34 @@ class LeadDetailView {
             <div><strong>Industry:</strong> ${lead.industry || 'B2B'}</div>
           </div>
 
-          <div style="font-size: 12px; color: var(--text-muted); line-height: 1.4; margin-bottom: 20px;">
-            The AI Voice Agent will autonomously dial this phone number, introduce Cybernauts in bilingual English/Hindi, ask key qualification questions, and evaluate fit based on prospect responses.
+          <!-- Call-Specific AI Agent Prompt / Call Script (Optional) -->
+          <div style="margin-bottom: 16px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <label for="callPromptInput" style="font-size: 12.5px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-scroll" style="color: #6b21a8;"></i>
+                <span>Call Script & Instructions (Optional)</span>
+              </label>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span id="callPromptCharCount" style="font-size: 11px; color: var(--text-muted); font-family: monospace;">0 / 2500</span>
+                <button type="button" id="btnClearPrompt" class="btn btn-sm btn-ghost" style="padding: 2px 6px; font-size: 11px; color: var(--text-muted);" title="Clear custom script">Clear</button>
+              </div>
+            </div>
+            
+            <div style="margin-bottom: 6px;">
+              <select id="callPromptTemplate" class="form-control" style="font-size: 12px; padding: 5px 8px; border-radius: 6px; width: 100%; border: 1px solid var(--border-color); background: #ffffff;">
+                <option value="">-- Choose Script Template (Optional) --</option>
+                <option value="b2b_discovery">Standard B2B Discovery & Qualification</option>
+                <option value="ai_automation">AI Voice Automation Pitch</option>
+                <option value="executive_followup">Executive Follow-Up & Availability Check</option>
+              </select>
+            </div>
+
+            <textarea id="callPromptInput" maxlength="2500" rows="4" class="form-control" style="width: 100%; font-size: 12.5px; line-height: 1.4; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-color); resize: vertical; font-family: inherit;" placeholder="Enter custom call instructions or script for the AI agent (e.g., Introduce yourself as Alex from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."></textarea>
+
+            <div style="font-size: 11px; color: var(--text-muted); line-height: 1.35; margin-top: 5px; display: flex; align-items: flex-start; gap: 5px;">
+              <i class="fa-solid fa-shield-halved" style="color: #6b21a8; margin-top: 2px;"></i>
+              <span><strong>Call Scoped:</strong> Applies to this call only. Core safety, phone validation, and call completion controls remain active.</span>
+            </div>
           </div>
 
           <div style="display: flex; justify-content: flex-end; gap: 10px;">
@@ -283,23 +309,70 @@ class LeadDetailView {
       </div>
     `;
 
+    // Templates Definition
+    const SCRIPT_TEMPLATES = {
+      b2b_discovery: "Introduce yourself as Alex from Cybernauts AI Solutions. Personalize the conversation with the prospect's company and industry. Ask how they currently handle lead qualification and customer follow-ups. Inquire about their biggest operational bottlenecks. If they show interest, briefly explain our automated workflows and ask if they are open to a brief follow-up discussion. Do not be pushy.",
+      ai_automation: "This call is for introducing our Voice AI Telephony agents to automate outbound customer reach and qualification. Ask the prospect if their sales team currently faces high call volume or manual dialer delays. Explain how our voice agents achieve zero-latency natural conversations in English and Hindi. If interested, ask for the best contact person and timeline for a live demonstration.",
+      executive_followup: "Follow up with the prospect regarding our previous discussion on enterprise automation. Inquire if they have reviewed our technical capabilities and if they have any specific questions regarding integration or pricing. If they are ready, offer to schedule a technical alignment call with our engineering leads."
+    };
+
+    const promptTextarea = confirmContainer.querySelector('#callPromptInput');
+    const charCountEl = confirmContainer.querySelector('#callPromptCharCount');
+    const templateSelect = confirmContainer.querySelector('#callPromptTemplate');
+    const btnClearPrompt = confirmContainer.querySelector('#btnClearPrompt');
+
+    if (promptTextarea && charCountEl) {
+      promptTextarea.addEventListener('input', () => {
+        charCountEl.textContent = `${promptTextarea.value.length} / 2500`;
+      });
+    }
+
+    if (templateSelect && promptTextarea) {
+      templateSelect.addEventListener('change', () => {
+        const selected = templateSelect.value;
+        if (selected && SCRIPT_TEMPLATES[selected]) {
+          promptTextarea.value = SCRIPT_TEMPLATES[selected];
+          if (charCountEl) charCountEl.textContent = `${promptTextarea.value.length} / 2500`;
+        }
+      });
+    }
+
+    if (btnClearPrompt && promptTextarea) {
+      btnClearPrompt.addEventListener('click', () => {
+        promptTextarea.value = '';
+        if (templateSelect) templateSelect.value = '';
+        if (charCountEl) charCountEl.textContent = '0 / 2500';
+      });
+    }
+
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') {
+        confirmContainer.innerHTML = '';
+        document.removeEventListener('keydown', handleEscape);
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+
     const btnCancel = confirmContainer.querySelector('#btnCancelConfirm');
     if (btnCancel) {
       btnCancel.addEventListener('click', () => {
         confirmContainer.innerHTML = '';
+        document.removeEventListener('keydown', handleEscape);
       });
     }
 
     const btnExecute = confirmContainer.querySelector('#btnExecuteDispatch');
     if (btnExecute) {
       btnExecute.addEventListener('click', async () => {
+        document.removeEventListener('keydown', handleEscape);
+        const customPrompt = promptTextarea ? promptTextarea.value.trim() : '';
         confirmContainer.innerHTML = '';
-        await this.executeDispatch(modalContainer, lead, phone);
+        await this.executeDispatch(modalContainer, lead, phone, customPrompt ? { call_prompt: customPrompt } : {});
       });
     }
   }
 
-  async executeDispatch(modalContainer, lead, phone) {
+  async executeDispatch(modalContainer, lead, phone, promptData = {}) {
     const qualNotice = modalContainer.querySelector('#detailDispatchNotice');
     const qualBadge = modalContainer.querySelector('#detailQualBadge');
     const tracePanel = modalContainer.querySelector('#detailTraceabilityPanel');
@@ -320,7 +393,8 @@ class LeadDetailView {
       }
 
       const identifier = lead.domain || lead.website || lead.id;
-      const res = await window.api.dispatchLeadQualification(identifier, { phoneNumber: phone });
+      const dispatchPayload = { phoneNumber: phone, force: true, ...promptData };
+      const res = await window.api.dispatchLeadQualification(identifier, dispatchPayload);
 
       if (res && (res.status === 'success' || res.status === 'in_progress')) {
         const dispatchId = res.dispatch_id || '';
@@ -336,7 +410,9 @@ class LeadDetailView {
           company_name: lead.company_name,
           phone: phone,
           call_status: 'initiated',
-          started_at: new Date().toISOString()
+          started_at: new Date().toISOString(),
+          has_custom_prompt: Boolean(promptData.call_prompt),
+          prompt_len: (promptData.call_prompt || '').length,
         });
 
         // Update Lead status locally
