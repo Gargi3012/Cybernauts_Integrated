@@ -402,7 +402,7 @@ class LiveAgentView {
               class="form-input" 
               rows="4" 
               maxlength="2500" 
-              placeholder="Write what this call is about, topics to discuss, questions to ask, qualification criteria, and how the AI agent should handle the customer. (e.g. Introduce yourself as Alex from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."
+              placeholder="Write what this call is about, topics to discuss, questions to ask, qualification criteria, and how the AI agent should handle the customer. (e.g. Introduce yourself as Sara from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."
               style="width: 100%; font-size: 12.5px; line-height: 1.45; resize: vertical; font-family: inherit;"
             ></textarea>
 
@@ -596,7 +596,7 @@ class LiveAgentView {
 
     // Call prompt templates & character count
     const SCRIPT_TEMPLATES = {
-      b2b_discovery: "Introduce yourself as Alex from Cybernauts AI Solutions. Personalize the conversation with the prospect's company and industry. Ask how they currently handle lead qualification and customer follow-ups. Inquire about their biggest operational bottlenecks. If they show interest, briefly explain our automated workflows and ask if they are open to a brief follow-up discussion. Do not be pushy.",
+      b2b_discovery: "Introduce yourself as Sara from Flowiz and Cybernauts. Personalize the conversation with the prospect's company and industry. Ask how they currently handle lead qualification and customer follow-ups. Inquire about their biggest operational bottlenecks. If they show interest, briefly explain our automated workflows and ask if they are open to a brief follow-up discussion. Do not be pushy.",
       ai_automation: "This call is for introducing our Voice AI Telephony agents to automate outbound customer reach and qualification. Ask the prospect if their sales team currently faces high call volume or manual dialer delays. Explain how our voice agents achieve zero-latency natural conversations in English and Hindi. If interested, ask for the best contact person and timeline for a live demonstration.",
       executive_followup: "Follow up with the prospect regarding our previous discussion on enterprise automation. Inquire if they have reviewed our technical capabilities and if they have any specific questions regarding integration or pricing. If they are ready, offer to schedule a technical alignment call with our engineering leads."
     };

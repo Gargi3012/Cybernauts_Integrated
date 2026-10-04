@@ -169,11 +169,24 @@ class SemanticEndCallDetector(FrameProcessor):
                 # because the TranscriptionFrame passes through normally.
                 # The TurnGuardFilter blocks any *subsequent* turns.
                 self.shared_state["ending_call"] = True
+                self.shared_state["ending_call_turn_id"] = self.shared_state.get("current_turn_id", 0)
                 self.shared_state["hangup_requested"] = True
                 self._consecutive_ambiguous = 0
                 logger.warning(
                     f"[EOC] CALL_END_CONFIRMATION | ending_call=True | "
                     f"hangup_requested=True | trigger='{matched}'"
+                )
+                
+                # Instruct the LLM to generate a terminal goodbye.
+                from pipecat.frames.frames import LLMMessagesAppendFrame
+                await self.push_frame(
+                    LLMMessagesAppendFrame(
+                        messages=[{
+                            "role": "system",
+                            "content": "The user has indicated they want to end the call. Respond with a single, short, final goodbye (e.g., 'Thank you for your time. Have a great day!'). DO NOT ask any questions or continue the conversation. This is the final response. is_final_call_response=True"
+                        }]
+                    ),
+                    direction
                 )
 
         elif isinstance(frame, LLMFullResponseEndFrame):

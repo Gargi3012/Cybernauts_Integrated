@@ -70,7 +70,7 @@ SARVAM_TTS_VOICE: str = os.getenv("SARVAM_TTS_VOICE", "shreya")
 SARVAM_TTS_MODEL: str = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3")
 
 # ── Bot identity ───────────────────────────────────────────────────────
-BOT_NAME: str = os.getenv("BOT_NAME", "Cybernauts Agent")
+BOT_NAME: str = os.getenv("BOT_NAME", "Sara")
 
 # ── Transport (Telephony/WebRTC transport) ────────────────────────────────
 TRANSPORT_MODE: str = os.getenv("TRANSPORT_MODE", "plivo") # "plivo", "twilio", or "livekit"

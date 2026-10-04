@@ -98,16 +98,21 @@ class TurnGuardFilter(FrameProcessor):
 
         # --- Check if ENDING_CALL — block new LLM responses ---
         if self.shared_state.get("ending_call"):
-            if isinstance(frame, (LLMFullResponseStartFrame, TextFrame,
-                                  TTSStartedFrame, TTSStoppedFrame,
-                                  LLMFullResponseEndFrame)):
-                logger.info(
-                    f"[TURN] ENDING_CALL: suppressing {type(frame).__name__}"
-                )
-                # Still push LLMFullResponseEndFrame so aggregators don't get stuck
-                if isinstance(frame, LLMFullResponseEndFrame):
-                    await self.push_frame(frame, direction)
-                return
+            ending_turn_id = self.shared_state.get("ending_call_turn_id")
+            current_turn_id = self.shared_state.get("current_turn_id", 0)
+            
+            # If ending_call was just set in this turn, allow it to generate the final goodbye
+            if ending_turn_id is None or current_turn_id > ending_turn_id:
+                if isinstance(frame, (LLMFullResponseStartFrame, TextFrame,
+                                      TTSStartedFrame, TTSStoppedFrame,
+                                      LLMFullResponseEndFrame)):
+                    logger.info(
+                        f"[TURN] ENDING_CALL: suppressing {type(frame).__name__} for subsequent turn {current_turn_id}"
+                    )
+                    # Still push LLMFullResponseEndFrame so aggregators don't get stuck
+                    if isinstance(frame, LLMFullResponseEndFrame):
+                        await self.push_frame(frame, direction)
+                    return
             await self.push_frame(frame, direction)
             return
 
@@ -280,33 +285,39 @@ class ValidatedUserTurnStartStrategy(BaseUserTurnStartStrategy):
 
 class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
     """
-    Optimized user turn stop strategy that eliminates redundant double-waiting
-    between VAD stop and speech timeout, ensuring the earliest safe finalization.
+    Optimized user turn stop strategy with deterministic phone capture support.
 
     Architecture:
     1. Silence-Aware Timing: When VAD declares user stopped speaking (after stop_secs),
        the strategy accounts for the fact that stop_secs of silence have ALREADY elapsed.
-    2. Earliest Safe Finalization: When Deepgram produces a finalized transcript:
-       - If the user has already been silent for at least user_speech_timeout (e.g. 0.45s),
-         the turn is finalized immediately with 0ms extra delay.
-       - If not, a timer is scheduled for only the remaining difference.
-    3. Duplicate Finalization Guard: Ensures exactly one turn finalization is emitted per user turn.
-    4. Stale Timer Protection: Resets and cancels pending timers immediately when new speech starts
-       (VADUserStartedSpeakingFrame or incoming text) or when a new turn is started.
-    5. Mid-Sentence Pause Protection: Natural pauses within conversational tolerance (< timeout)
-       do not fragment the utterance.
+    2. Phone Digit Recognition & Dynamic Pause Extension:
+       - Detects when phone digits are being spoken or PHONE_CAPTURE state is active.
+       - Extends silence timeout to 2.2s for partial digits (<10 digits), allowing
+         callers to speak digits at a natural pace without premature LLM interruption.
+       - Reduces timeout to 0.15s (immediate finalization) as soon as 10 valid digits
+         or an explicit final phrase ("that's my number") is confirmed.
+    3. Transcript Deduplication & Revision:
+       - Detects duplicate STT frames and revised hypothesis expansions from Deepgram.
+       - Commits only finalized, deduplicated segments without duplicate token appending.
+    4. Diagnostic Logging:
+       - Safe, non-PII diagnostic logging for PHONE_CAPTURE turns (<REDACTED_NUMERIC>).
     """
 
     def __init__(
         self,
         user_speech_timeout: float = 0.45,
+        digit_speech_timeout: float = 2.2,
+        digit_complete_timeout: float = 0.15,
         shared_state: Optional[dict] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.user_speech_timeout = user_speech_timeout
+        self.digit_speech_timeout = digit_speech_timeout
+        self.digit_complete_timeout = digit_complete_timeout
         self.shared_state = shared_state if shared_state is not None else {}
         self._text = ""
+        self._last_final_text: str = ""
         self._vad_user_speaking = False
         self._transcript_finalized = False
         self._speech_end_estimate: Optional[float] = None
@@ -316,6 +327,7 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
     async def reset(self):
         await super().reset()
         self._text = ""
+        self._last_final_text = ""
         self._vad_user_speaking = False
         self._transcript_finalized = False
         self._speech_end_estimate = None
@@ -335,6 +347,45 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
             except Exception:
                 pass
             self._timeout_task = None
+
+    def _get_active_speech_timeout(self) -> float:
+        """
+        Determines the dynamic speech silence timeout.
+        Returns digit_complete_timeout (0.15s) when 10 digits are valid or final phrase spoken,
+        digit_speech_timeout (2.2s) when partial digits are being accumulated during PHONE_CAPTURE,
+        or user_speech_timeout (0.45s) for normal conversation.
+        """
+        phone_norm = self.shared_state.get("phone_normalizer")
+        phone_confirmed = self.shared_state.get("phone_confirmed", False)
+        
+        in_phone_capture = phone_norm and len(phone_norm.digits) > 0 and not phone_confirmed
+
+        if not in_phone_capture:
+            return self.user_speech_timeout
+
+        from app.services.phone_digit_normalizer import (
+            PhoneDigitNormalizer,
+            is_valid_indian_mobile,
+            TokenType,
+        )
+
+        has_final_phrase = PhoneDigitNormalizer.detect_final_phrase(self._text) if self._text else False
+
+        total_digits = ""
+        if phone_norm and hasattr(phone_norm, "digits"):
+            total_digits = phone_norm.digits
+        elif self._text:
+            cands = PhoneDigitNormalizer.extract_turn_candidates(self._text)
+            if cands and cands[0]:
+                total_digits = cands[0]
+
+        if has_final_phrase or (len(total_digits) == 10 and is_valid_indian_mobile(total_digits)):
+            return self.digit_complete_timeout
+
+        if 0 < len(total_digits) < 10:
+            return self.digit_speech_timeout
+
+        return self.user_speech_timeout
 
     async def process_frame(self, frame: Frame) -> Any:
         import time
@@ -356,19 +407,20 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
             self._vad_user_speaking = False
             stop_secs = getattr(frame, "stop_secs", 0.0) or 0.4
             self._speech_end_estimate = now - stop_secs
+            active_timeout = self._get_active_speech_timeout()
 
             # If we already have finalized transcript text, evaluate immediate finalization
             if self._text.strip() and self._transcript_finalized:
                 elapsed_silence = now - self._speech_end_estimate
-                if elapsed_silence >= self.user_speech_timeout:
+                if elapsed_silence >= active_timeout:
                     await self._maybe_trigger_user_turn_stopped()
                     return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
                 else:
-                    remaining = max(0.01, self.user_speech_timeout - elapsed_silence)
+                    remaining = max(0.01, active_timeout - elapsed_silence)
                     self._schedule_timeout(remaining)
             elif self._text.strip():
                 # Waiting for final transcript; schedule fallback timeout
-                self._schedule_timeout(self.user_speech_timeout)
+                self._schedule_timeout(active_timeout)
 
             return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
 
@@ -379,21 +431,85 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
                 import re
                 clean_text = re.sub(r'\[System:.*?\]', '', text).strip()
                 if clean_text:
-                    self._text += (" " + clean_text if self._text else clean_text)
+                    from app.services.phone_digit_normalizer import (
+                        PhoneDigitNormalizer,
+                        log_deepgram_diagnostic_event,
+                        TokenType,
+                    )
+
+                    # Deduplication & hypothesis revision
+                    segment_type = "final"
+                    if clean_text == self._last_final_text:
+                        segment_type = "duplicate"
+                    elif self._text and clean_text.startswith(self._text):
+                        self._text = clean_text
+                        segment_type = "revised_expansion"
+                    elif self._text and self._text.endswith(clean_text):
+                        segment_type = "duplicate_subset"
+                    else:
+                        overlap = PhoneDigitNormalizer._find_overlap(self._text, clean_text)
+                        if overlap > 0:
+                            self._text += clean_text[overlap:]
+                            segment_type = "overlap_merged"
+                        else:
+                            self._text = (self._text + " " + clean_text) if self._text else clean_text
+                            segment_type = "continuation"
+
+                    self._last_final_text = clean_text
                     self._transcript_finalized = True
+
+                    # Check phone capture state & update normalizer if present
+                    turn_id = self.shared_state.get("current_turn_id", 0)
+                    session_id = self.shared_state.get("session_id", "")
+                    phone_norm = self.shared_state.get("phone_normalizer")
+                    tokens = PhoneDigitNormalizer.extract_tokens(clean_text)
+                    has_digit_tokens = any(
+                        t.token_type in (TokenType.DIGIT, TokenType.MULTIPLIER, TokenType.TIME_LIKE_AMBIGUOUS)
+                        for t in tokens
+                    )
+
+                    if phone_norm:
+                        in_phone_capture = len(phone_norm.digits) > 0 and not self.shared_state.get("phone_confirmed", False)
+                        # Also enter phone capture if we see digit tokens
+                        if not in_phone_capture and has_digit_tokens:
+                            in_phone_capture = True
+                            
+                        if in_phone_capture:
+                            buf_before = phone_norm.digits if phone_norm else ""
+                            if phone_norm and segment_type != "duplicate":
+                                phone_norm.process_utterance(clean_text)
+                            buf_after = phone_norm.digits if phone_norm else ""
+                            status_val = phone_norm.status.value if phone_norm else "collecting"
+
+                            speech_final = bool(getattr(frame, "speech_final", False))
+                            log_deepgram_diagnostic_event(
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                transcript=clean_text,
+                                is_final=True,
+                                speech_final=speech_final,
+                                confidence=float(getattr(frame, "confidence", 1.0) or 1.0),
+                                words=getattr(frame, "words", None),
+                                segment_type=segment_type,
+                                buffer_before=buf_before,
+                                buffer_after=buf_after,
+                                validation_status=status_val,
+                            )
+
+                    active_timeout = self._get_active_speech_timeout()
 
                     # If user is not speaking according to VAD, check if we can finalize
                     if not self._vad_user_speaking and self._speech_end_estimate:
                         elapsed_silence = now - self._speech_end_estimate
-                        if elapsed_silence >= self.user_speech_timeout:
+                        if elapsed_silence >= active_timeout:
                             await self._maybe_trigger_user_turn_stopped()
                             return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
                         else:
-                            remaining = max(0.01, self.user_speech_timeout - elapsed_silence)
+                            remaining = max(0.01, active_timeout - elapsed_silence)
                             self._schedule_timeout(remaining)
                     elif not self._vad_user_speaking and self._speech_end_estimate is None:
                         # Fallback when transcripts arrive without VAD stop
-                        self._schedule_timeout(self.user_speech_timeout)
+                        self._schedule_timeout(active_timeout)
 
             return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
 
@@ -405,6 +521,42 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
                 except Exception:
                     pass
                 self._timeout_task = None
+
+            text = (getattr(frame, "text", "") or "").strip()
+            if text and not getattr(frame, "user_id", None) == "bot":
+                import re
+                clean_text = re.sub(r'\[System:.*?\]', '', text).strip()
+                phone_norm = self.shared_state.get("phone_normalizer")
+                in_phone_capture = False
+                if phone_norm:
+                    in_phone_capture = len(phone_norm.digits) > 0 and not self.shared_state.get("phone_confirmed", False)
+                    # Also check for digits in the interim transcript
+                    if not in_phone_capture:
+                        from app.services.phone_digit_normalizer import PhoneDigitNormalizer, TokenType
+                        tokens = PhoneDigitNormalizer.extract_tokens(clean_text)
+                        has_digit_tokens = any(t.token_type in (TokenType.DIGIT, TokenType.MULTIPLIER, TokenType.TIME_LIKE_AMBIGUOUS) for t in tokens)
+                        if has_digit_tokens:
+                            in_phone_capture = True
+                            
+                if in_phone_capture:
+                    from app.services.phone_digit_normalizer import log_deepgram_diagnostic_event
+                    turn_id = self.shared_state.get("current_turn_id", 0)
+                    session_id = self.shared_state.get("session_id", "")
+                    buf = phone_norm.digits if phone_norm else ""
+                    log_deepgram_diagnostic_event(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        transcript=clean_text,
+                        is_final=False,
+                        speech_final=False,
+                        confidence=float(getattr(frame, "confidence", 1.0) or 1.0),
+                        words=getattr(frame, "words", None),
+                        segment_type="interim",
+                        buffer_before=buf,
+                        buffer_after=buf,
+                        validation_status="interim_hypothesis",
+                    )
+
             return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
 
         return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
@@ -442,9 +594,11 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
                 pass
             self._timeout_task = None
         turn_id = self.shared_state.get("current_turn_id", 0)
+        active_timeout = self._get_active_speech_timeout()
         logger.info(
             f"[END_OF_TURN] User turn finalized | turn_id={turn_id} | "
-            f"text='{self._text.strip()}' | speech_timeout={self.user_speech_timeout}s"
+            f"text='{self._text.strip()}' | speech_timeout={active_timeout}s"
         )
         await self.trigger_user_turn_stopped()
+
 

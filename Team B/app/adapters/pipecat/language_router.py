@@ -1,5 +1,6 @@
 import re
 import asyncio
+import os
 from loguru import logger
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.frames.frames import Frame, TranscriptionFrame, LLMMessagesAppendFrame
@@ -89,12 +90,13 @@ class CallTerminationProcessor(FrameProcessor):
         self.llm_response_completed = False
         self._hangup_executed = False
         self._watchdog_task = None
+        self._current_bot_text = ""
 
     async def _execute_hangup(self, reason: str = "normal"):
-        if self._hangup_executed or self.shared_state.get("_call_hung_up"):
+        if self._hangup_executed or self.shared_state.get("termination_started"):
             return
         self._hangup_executed = True
-        self.shared_state["_call_hung_up"] = True
+        self.shared_state["termination_started"] = True
         logger.warning(f"[EOC] CALL_CLOSING_COMPLETED ({reason}) | Executing automatic call termination.")
 
         # Cancel watchdog timer if running
@@ -138,21 +140,50 @@ class CallTerminationProcessor(FrameProcessor):
     async def _start_watchdog(self, timeout_sec: float = 4.5):
         try:
             await asyncio.sleep(timeout_sec)
-            if not self._hangup_executed and self.shared_state.get("hangup_requested"):
+            if not self._hangup_executed and (self.shared_state.get("hangup_requested") or self.shared_state.get("termination_requested")):
                 logger.warning(f"[EOC] Hangup watchdog timeout ({timeout_sec}s) reached. Triggering automatic call termination.")
                 await self._execute_hangup(reason="watchdog_timeout")
         except asyncio.CancelledError:
             pass
 
+    def _is_natural_conclusion(self, text: str) -> bool:
+        import re
+        if "?" in text:
+            return False
+            
+        text_lower = text.lower()
+        continuation_markers = [
+            "now", "so", "let me", "ask", "question", "confirm", 
+            "details", "next", "one more", "another", "what", "how", "why"
+        ]
+        if any(marker in text_lower for marker in continuation_markers):
+            return False
+            
+        terminal_phrases = [
+            "have a great day",
+            "have a wonderful day",
+            "have a good one",
+            "thanks for your time",
+            "thank you for your time",
+            "appreciate your time",
+            "goodbye",
+            "bye"
+        ]
+        if any(phrase in text_lower for phrase in terminal_phrases):
+            return True
+            
+        return False
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         from pipecat.frames.frames import (
-            TTSStoppedFrame, EndTaskFrame, TextFrame, AudioRawFrame,
-            TranscriptionFrame, LLMFullResponseEndFrame, CancelFrame
+            TTSStartedFrame, TTSStoppedFrame, EndTaskFrame, TextFrame, AudioRawFrame,
+            TranscriptionFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, CancelFrame,
+            BotStartedSpeakingFrame, BotStoppedSpeakingFrame
         )
 
         # When hangup is first requested, launch safety watchdog timer
-        if self.shared_state.get("hangup_requested") and not self._hangup_executed:
+        if (self.shared_state.get("hangup_requested") or self.shared_state.get("termination_requested")) and not self._hangup_executed:
             if not self._watchdog_task or self._watchdog_task.done():
                 self._watchdog_task = asyncio.create_task(self._start_watchdog(4.5))
 
@@ -160,19 +191,38 @@ class CallTerminationProcessor(FrameProcessor):
         if isinstance(frame, TranscriptionFrame) and not getattr(frame, 'user_id', None) == "bot":
             if not self.shared_state.get("ending_call"):
                 self.llm_response_completed = False
+            self._current_bot_text = ""
+            
+        if isinstance(frame, TextFrame):
+            self._current_bot_text += frame.text
 
         if isinstance(frame, LLMFullResponseEndFrame):
             self.llm_response_completed = True
+            # Evaluate for natural conclusion
+            if not self.shared_state.get("hangup_requested") and not self.shared_state.get("termination_requested"):
+                if self._current_bot_text and self._is_natural_conclusion(self._current_bot_text):
+                    logger.warning(f"[EOC] NATURAL CONCLUSION DETECTED | text='{self._current_bot_text}'")
+                    self.shared_state["termination_requested"] = True
+                    self.shared_state["termination_source"] = "NATURAL_CONCLUSION"
+                    if not self._watchdog_task or self._watchdog_task.done():
+                        self._watchdog_task = asyncio.create_task(self._start_watchdog(4.5))
+
+        if self.shared_state.get("ending_call") or self.shared_state.get("termination_requested"):
+            if isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame, TTSStartedFrame, TTSStoppedFrame, LLMFullResponseStartFrame)):
+                logger.info(
+                    "CALL_TERMINATION_FRAME",
+                    frame_type=type(frame).__name__,
+                    ending_call=self.shared_state.get("ending_call"),
+                    termination_requested=self.shared_state.get("termination_requested"),
+                    ending_call_turn_id=self.shared_state.get("ending_call_turn_id"),
+                )
 
         if not isinstance(frame, (AudioRawFrame, TextFrame)):
-            logger.debug(f"CallTerminationProcessor received: {type(frame).__name__} | hangup_requested={self.shared_state.get('hangup_requested', False)}")
+            logger.debug(f"CallTerminationProcessor received: {type(frame).__name__} | hangup_requested={self.shared_state.get('hangup_requested', False)} | termination_requested={self.shared_state.get('termination_requested', False)}")
 
         await self.push_frame(frame, direction)
 
-        if isinstance(frame, TTSStoppedFrame):
-            if getattr(frame, "is_filler", False):
-                logger.info("CallTerminationProcessor: Ignoring filler TTSStoppedFrame.")
-                return
-            logger.info(f"CallTerminationProcessor saw TTSStoppedFrame. state: {self.shared_state}")
-            if self.shared_state.get("hangup_requested"):
-                await self._execute_hangup(reason="tts_goodbye_completed")
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            logger.info(f"[EOC] CallTerminationProcessor saw BotStoppedSpeakingFrame. state: {self.shared_state}")
+            if self.shared_state.get("hangup_requested") or self.shared_state.get("termination_requested"):
+                await self._execute_hangup(reason="bot_goodbye_completed")

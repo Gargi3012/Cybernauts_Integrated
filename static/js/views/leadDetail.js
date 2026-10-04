@@ -289,7 +289,7 @@ class LeadDetailView {
               </select>
             </div>
 
-            <textarea id="callPromptInput" maxlength="2500" rows="4" class="form-control" style="width: 100%; font-size: 12.5px; line-height: 1.4; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-color); resize: vertical; font-family: inherit;" placeholder="Enter custom call instructions or script for the AI agent (e.g., Introduce yourself as Alex from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."></textarea>
+            <textarea id="callPromptInput" maxlength="2500" rows="4" class="form-control" style="width: 100%; font-size: 12.5px; line-height: 1.4; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-color); resize: vertical; font-family: inherit;" placeholder="Enter custom call instructions or script for the AI agent (e.g., Introduce yourself as Sara from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."></textarea>
 
             <div style="font-size: 11px; color: var(--text-muted); line-height: 1.35; margin-top: 5px; display: flex; align-items: flex-start; gap: 5px;">
               <i class="fa-solid fa-shield-halved" style="color: #6b21a8; margin-top: 2px;"></i>
@@ -311,7 +311,7 @@ class LeadDetailView {
 
     // Templates Definition
     const SCRIPT_TEMPLATES = {
-      b2b_discovery: "Introduce yourself as Alex from Cybernauts AI Solutions. Personalize the conversation with the prospect's company and industry. Ask how they currently handle lead qualification and customer follow-ups. Inquire about their biggest operational bottlenecks. If they show interest, briefly explain our automated workflows and ask if they are open to a brief follow-up discussion. Do not be pushy.",
+      b2b_discovery: "Introduce yourself as Sara from Flowiz and Cybernauts. Personalize the conversation with the prospect's company and industry. Ask how they currently handle lead qualification and customer follow-ups. Inquire about their biggest operational bottlenecks. If they show interest, briefly explain our automated workflows and ask if they are open to a brief follow-up discussion. Do not be pushy.",
       ai_automation: "This call is for introducing our Voice AI Telephony agents to automate outbound customer reach and qualification. Ask the prospect if their sales team currently faces high call volume or manual dialer delays. Explain how our voice agents achieve zero-latency natural conversations in English and Hindi. If interested, ask for the best contact person and timeline for a live demonstration.",
       executive_followup: "Follow up with the prospect regarding our previous discussion on enterprise automation. Inquire if they have reviewed our technical capabilities and if they have any specific questions regarding integration or pricing. If they are ready, offer to schedule a technical alignment call with our engineering leads."
     };
