@@ -7,13 +7,81 @@ import asyncio
 import base64
 import io
 import wave
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, AsyncIterator
+import re
 
 import aiohttp
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame, ErrorFrame
+from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame, ErrorFrame, AggregationType
 from pipecat.services.tts_service import TTSService
+from pipecat.utils.text.base_text_aggregator import BaseTextAggregator
+from pipecat.utils.text.simple_text_aggregator import Aggregation
+
+
+class LowLatencyClauseAggregator(BaseTextAggregator):
+    """
+    Ultra-low latency text aggregator for streaming LLM-to-TTS pipelines.
+    Adaptive clause release:
+      - Natural pause/punctuation boundaries: [, ; : . ! ? — \n ।]
+      - First clause releases after >= 3 words if no punctuation arrived yet,
+        minimizing first-audio latency without mid-sentence word fragmentation.
+      - Subsequent clauses release after >= 7 words without punctuation.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(aggregation_type=AggregationType.SENTENCE, **kwargs)
+        self._buffer = ""
+        self._clause_pattern = re.compile(r'^(.*?[,;:.!?—\n।])\s*(.*)$', re.DOTALL)
+        self._first_clause = True
+
+    @property
+    def text(self) -> Aggregation:
+        return Aggregation(text=self._buffer.strip(), type=AggregationType.SENTENCE)
+
+    async def aggregate(self, text: str) -> AsyncIterator[Aggregation]:
+        self._buffer += text
+        while True:
+            match = self._clause_pattern.match(self._buffer)
+            if match:
+                clause = match.group(1).strip()
+                remainder = match.group(2)
+                # Ensure clause contains at least two non-punctuation characters
+                clean_clause = re.sub(r'[,;:.!?—\n।\s]', '', clause)
+                if len(clean_clause) >= 2:
+                    self._buffer = remainder
+                    self._first_clause = False
+                    yield Aggregation(text=clause, type=AggregationType.SENTENCE)
+                    continue
+
+            # First clause emits after >= 3 words; subsequent clauses after >= 7 words
+            words = self._buffer.strip().split()
+            threshold = 3 if self._first_clause else 7
+            if len(words) >= threshold:
+                split_idx = self._buffer.rfind(" ")
+                if split_idx > 0:
+                    phrase = self._buffer[:split_idx].strip()
+                    self._buffer = self._buffer[split_idx + 1:]
+                    self._first_clause = False
+                    yield Aggregation(text=phrase, type=AggregationType.SENTENCE)
+                    continue
+            break
+
+    async def flush(self) -> Aggregation | None:
+        rem = self._buffer.strip()
+        self._buffer = ""
+        self._first_clause = True
+        if rem:
+            return Aggregation(text=rem, type=AggregationType.SENTENCE)
+        return None
+
+    async def handle_interruption(self):
+        self._buffer = ""
+        self._first_clause = True
+
+    async def reset(self):
+        self._buffer = ""
+        self._first_clause = True
 
 
 class SarvamTTSService(TTSService):
@@ -45,10 +113,25 @@ class SarvamTTSService(TTSService):
         self.target_language_code = target_language_code
         self.url = "https://api.sarvam.ai/text-to-speech"
         self._session: Optional[aiohttp.ClientSession] = None
+        # Replace default sentence-lookahead aggregator with immediate low-latency clause aggregator
+        self._text_aggregator = LowLatencyClauseAggregator()
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            connector = aiohttp.TCPConnector(keepalive_timeout=60.0, limit=20, ttl_dns_cache=300)
+            ssl_context = None
+            try:
+                import certifi
+                import ssl
+                ssl_context = ssl.create_default_context(cafile=certifi.where())
+            except Exception:
+                ssl_context = None
+
+            connector = aiohttp.TCPConnector(
+                ssl=ssl_context,
+                keepalive_timeout=60.0,
+                limit=20,
+                ttl_dns_cache=300
+            )
             self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 

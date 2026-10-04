@@ -11,11 +11,23 @@ _leads_lock = asyncio.Lock()
 def _normalize_phone(phone: str) -> str:
     """Normalize an Indian phone number to exactly 10 digits.
     
-    Strips common prefixes spoken by users:
-    - +91XXXXXXXXXX  → XXXXXXXXXX  (12 chars with +)
-    - 91XXXXXXXXXX   → XXXXXXXXXX  (12 digits)
-    - 0XXXXXXXXXX    → XXXXXXXXXX  (11 digits, landline-style)
+    Supports words, colons, spaces, and prefixes:
+    - +91XXXXXXXXXX  → XXXXXXXXXX
+    - 91XXXXXXXXXX   → XXXXXXXXXX
+    - 0XXXXXXXXXX    → XXXXXXXXXX
     """
+    if not phone:
+        return ""
+    try:
+        from app.services.phone_digit_normalizer import PhoneDigitNormalizer
+        cands = PhoneDigitNormalizer.extract_turn_candidates(phone)
+        for cand in cands:
+            norm = PhoneDigitNormalizer._normalize_complete_number(cand)
+            if norm and len(norm) == 10:
+                return norm
+    except Exception:
+        pass
+
     import re
     digits = re.sub(r'\D', '', phone)
     # Strip +91 / 91 country-code prefix (leaves 10 digits for Indian mobile)
@@ -25,6 +37,7 @@ def _normalize_phone(phone: str) -> str:
     elif len(digits) == 11 and digits.startswith('0'):
         digits = digits[1:]
     return digits
+
 
 
 async def save_lead(params, name: str, phone: str, project_details: str = ""):

@@ -51,3 +51,10 @@ data/
 Thumbs.db
 .vscode/
 .idea/
+
+# Scratch, debug artifacts, and local server logs
+scratch/
+artifacts/
+server_logs.*.txt
+tests_verification_openai.py
+output/

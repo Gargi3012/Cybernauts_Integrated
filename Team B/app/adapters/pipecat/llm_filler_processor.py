@@ -36,6 +36,12 @@ class DynamicLLMFillerProcessor(FrameProcessor):
     """
     Parses LLM output for dynamic filler/acknowledgements and streams them
     to Sarvam TTS ahead of the main response when needed.
+
+    Restores true incremental streaming for conversational text:
+    - Normal conversational text frames are forwarded downstream IMMEDIATELY.
+    - No waiting for complete JSON, end-of-response, or sentence boundaries.
+    - TurnGuard compatibility: validates turn_id on every frame to discard stale chunks.
+    - Dynamic acknowledgements via tags (<ack> or <ack wait='true'>) or legacy JSON remain supported.
     """
 
     def __init__(self, session_id: str = None, shared_state: dict = None, event_bus=None, **kwargs):
@@ -46,7 +52,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
 
         # Stream state for current turn
         self._buffer = ""
-        self._mode = "detecting"  # "detecting", "json", "tag", "passthrough"
+        self._mode = "detecting"  # "detecting", "streaming", "tag", "json", "waiting"
         self._ack_emitted = False
         self._filler_active = False
         self._current_turn_id = 0
@@ -79,7 +85,6 @@ class DynamicLLMFillerProcessor(FrameProcessor):
         if self.event_bus:
             try:
                 from app.events.event_types import Event
-                # Generic dictionary payload event
                 await self.event_bus.publish(
                     "FillerGenerated",
                     Event(
@@ -98,7 +103,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
         filler_frame = TextFrame(text=ack_text)
         filler_frame.is_filler = True
         filler_frame._turn_id = turn_id
-        
+
         logger.info(f"[FILLER] FILLER_TTS_STARTED | {self._get_correlation()}")
         await self.push_frame(filler_frame, direction)
 
@@ -114,15 +119,22 @@ class DynamicLLMFillerProcessor(FrameProcessor):
 
         # 2. LLM response start
         elif isinstance(frame, LLMFullResponseStartFrame):
+            current_turn_id = self._get_turn_id()
+            frame_turn_id = getattr(frame, "_turn_id", current_turn_id)
+            self._current_turn_id = frame_turn_id if frame_turn_id is not None else current_turn_id
             self._buffer = ""
             self._mode = "detecting"
             self._ack_emitted = False
             self._filler_active = False
-            self._current_turn_id = getattr(frame, "_turn_id", self._get_turn_id())
+
+            if frame_turn_id is not None and frame_turn_id < current_turn_id:
+                logger.warning(f"[FILLER] STALE StartFrame turn_id={frame_turn_id} < {current_turn_id}")
+                return
+
             await self.push_frame(frame, direction)
             return
 
-        # 3. User barge-in / Interruption while filler is playing
+        # 3. User barge-in / Interruption while filler or response is active
         elif isinstance(frame, (UserStartedSpeakingFrame, InterruptionFrame)):
             if self._filler_active:
                 logger.warning(f"[FILLER] FILLER_INTERRUPTED | {self._get_correlation()}")
@@ -143,94 +155,219 @@ class DynamicLLMFillerProcessor(FrameProcessor):
 
         # 5. Streaming TextFrame from LLM
         elif isinstance(frame, TextFrame):
+            current_turn_id = self._get_turn_id()
+            frame_turn_id = getattr(frame, "_turn_id", self._current_turn_id)
+
+            # TurnGuard validation: discard stale chunks
+            if frame_turn_id is not None and frame_turn_id < current_turn_id:
+                logger.warning(
+                    f"[FILLER] STALE_CHUNK_DISCARDED | frame_turn={frame_turn_id} < current_turn={current_turn_id}"
+                )
+                return
+
+            # Check call termination / pause suppression
+            if self.shared_state.get("ending_call"):
+                logger.info(f"[FILLER] ENDING_CALL active: suppressing TextFrame")
+                return
+
+            if self._mode == "waiting" or self.shared_state.get("user_pause"):
+                return
+
             text = frame.text
+            if not text:
+                return
+
+            # Fast path: already in streaming mode -> forward immediately!
+            if self._mode == "streaming":
+                if not hasattr(frame, "_turn_id"):
+                    frame._turn_id = self._current_turn_id
+                await self.push_frame(frame, direction)
+                return
+
             self._buffer += text
 
-            # Mode: detecting format
+            # Mode: Detecting (initial tokens of the turn)
             if self._mode == "detecting":
-                stripped = self._buffer.strip()
+                stripped = self._buffer.lstrip()
                 if not stripped:
                     return
 
-                if stripped.startswith("{"):
-                    self._mode = "json"
-                elif stripped.startswith("<ack"):
-                    self._mode = "tag"
-                elif len(stripped) >= 6:
-                    # Neither JSON nor tag — fast response, enter passthrough immediately
-                    self._mode = "passthrough"
-                    if self._buffer:
-                        await self.push_frame(TextFrame(text=self._buffer), direction)
+                # Check for tag start
+                if stripped.startswith("<"):
+                    if stripped.startswith("<ack"):
+                        self._mode = "tag"
+                        # Fall through to tag handling below
+                    elif len(stripped) < 4:
+                        # Ambiguous: could be <ack
+                        return
+                    else:
+                        # Not an <ack> tag, enter streaming immediately
+                        self._mode = "streaming"
+                        to_send = self._buffer
                         self._buffer = ""
-                    return
+                        out_frame = TextFrame(text=to_send)
+                        out_frame._turn_id = self._current_turn_id
+                        await self.push_frame(out_frame, direction)
+                        return
+
+                # Check for JSON start
+                elif stripped.startswith("{"):
+                    # Check if complete JSON is already available
+                    if stripped.endswith("}"):
+                        try:
+                            data = json.loads(stripped)
+                            ack = data.get("acknowledgement")
+                            resp = data.get("response", "")
+                            should_wait = bool(data.get("should_wait", False))
+                            call_end = bool(data.get("call_end", False))
+
+                            if ack and not self._ack_emitted:
+                                await self._emit_filler_text(ack.strip(), should_wait, direction)
+
+                            if should_wait:
+                                self.shared_state["user_pause"] = True
+                                logger.info(f"[FILLER] USER_PAUSE confirmed | {self._get_correlation()}")
+                                self._mode = "waiting"
+                                self._buffer = ""
+                                return
+                            elif resp and resp.strip():
+                                out_frame = TextFrame(text=resp.strip())
+                                out_frame._turn_id = self._current_turn_id
+                                await self.push_frame(out_frame, direction)
+
+                            if call_end:
+                                self.shared_state["hangup_requested"] = True
+
+                            self._buffer = ""
+                            self._mode = "streaming"
+                            return
+                        except Exception:
+                            pass
+
+                    # Ambiguous / partial JSON: check if it's filler schema or ordinary text
+                    if "acknowledgement" in self._buffer or "response" in self._buffer or len(stripped) < 25:
+                        self._mode = "json"
+                        # Fall through to json handling below
+                    else:
+                        # Ordinary text containing '{': do not buffer!
+                        self._mode = "streaming"
+                        to_send = self._buffer
+                        self._buffer = ""
+                        out_frame = TextFrame(text=to_send)
+                        out_frame._turn_id = self._current_turn_id
+                        await self.push_frame(out_frame, direction)
+                        return
+
                 else:
-                    # Need a few more chars to disambiguate
+                    # PLAIN CONVERSATIONAL TEXT — STREAM IMMEDIATELY!
+                    self._mode = "streaming"
+                    to_send = self._buffer
+                    self._buffer = ""
+                    out_frame = TextFrame(text=to_send)
+                    out_frame._turn_id = self._current_turn_id
+                    await self.push_frame(out_frame, direction)
                     return
 
-            # Mode: Passthrough (fast response without filler)
-            if self._mode == "passthrough":
-                if self._buffer:
-                    await self.push_frame(TextFrame(text=self._buffer), direction)
-                    self._buffer = ""
-                return
-
-            # Mode: Tag <ack wait="true">...</ack>
+            # Mode: Tag mode (<ack>...</ack>)
             if self._mode == "tag":
                 tag_match = re.search(r'<ack(?:\s+wait=[\"\']?(true|false)[\"\']?)?>(.*?)</ack>', self._buffer, re.DOTALL | re.I)
                 if tag_match:
                     wait_val = (tag_match.group(1) or "").lower() == "true"
                     ack_text = tag_match.group(2).strip()
-                    
+
                     if not self._ack_emitted:
                         await self._emit_filler_text(ack_text, wait_val, direction)
 
-                    # Remove the tag from buffer
+                    # Remove tag from buffer
                     self._buffer = self._buffer[tag_match.end():]
-                    
+
                     if wait_val:
-                        # User pause requested: hold and wait for user, suppress further text
                         self.shared_state["user_pause"] = True
                         logger.info(f"[FILLER] USER_PAUSE active | {self._get_correlation()} — suppressing subsequent text")
                         self._buffer = ""
                         self._mode = "waiting"
                         return
                     else:
-                        # Switch to passthrough for the main response
-                        self._mode = "passthrough"
-                        if self._buffer.strip():
-                            await self.push_frame(TextFrame(text=self._buffer), direction)
+                        # Enter streaming mode immediately for remaining response
+                        self._mode = "streaming"
+                        if self._buffer:
+                            out_frame = TextFrame(text=self._buffer)
+                            out_frame._turn_id = self._current_turn_id
+                            await self.push_frame(out_frame, direction)
                             self._buffer = ""
+                        return
+                elif len(self._buffer) > 100:
+                    # Tag malformed safety fallback: flush and stream
+                    self._mode = "streaming"
+                    out_frame = TextFrame(text=self._buffer)
+                    out_frame._turn_id = self._current_turn_id
+                    await self.push_frame(out_frame, direction)
+                    self._buffer = ""
+                    return
                 return
 
-            # Mode: JSON {"acknowledgement": "...", "response": "...", "should_wait": bool}
+            # Mode: JSON mode (legacy / backward-compatibility)
             if self._mode == "json":
-                # Check if acknowledgement string is closed
+                # Check for acknowledgement
                 if not self._ack_emitted:
                     ack_m = re.search(r'\"acknowledgement\"\s*:\s*(?:\"((?:\\\\.|[^\"])*)\"|null)', self._buffer)
                     if ack_m:
                         ack_val = ack_m.group(1)
                         wait_m = re.search(r'\"should_wait\"\s*:\s*(true|false)', self._buffer, re.I)
                         should_wait = (wait_m.group(1).lower() == "true") if wait_m else False
-                        
+
                         if ack_val and ack_val.strip() and ack_val.lower() != "null":
                             await self._emit_filler_text(ack_val.strip(), should_wait, direction)
                         else:
                             self._ack_emitted = True
                             logger.debug(f"[FILLER] LLM decided no acknowledgement needed | {self._get_correlation()}")
 
-                # Check if should_wait is true in JSON
+                # Check should_wait
                 if "true" in re.findall(r'\"should_wait\"\s*:\s*(true)', self._buffer, re.I):
                     self.shared_state["user_pause"] = True
 
-                # Check if call_end is true in JSON
+                # Check call_end
                 if "true" in re.findall(r'\"call_end\"\s*:\s*(true)', self._buffer, re.I):
                     self.shared_state["hangup_requested"] = True
 
+                # If JSON has closed, parse and forward response immediately
+                stripped_buf = self._buffer.strip()
+                if stripped_buf.endswith("}"):
+                    try:
+                        data = json.loads(stripped_buf)
+                        resp = data.get("response", "")
+                        should_wait = bool(data.get("should_wait", False))
+                        if not should_wait and resp and resp.strip():
+                            out_frame = TextFrame(text=resp.strip())
+                            out_frame._turn_id = self._current_turn_id
+                            await self.push_frame(out_frame, direction)
+                        self._buffer = ""
+                        self._mode = "streaming"
+                        return
+                    except Exception:
+                        pass
+
+                # Safety: If buffer grows beyond 150 chars without matching JSON schema, release to streaming
+                if len(self._buffer) > 150 and not any(k in self._buffer for k in ["acknowledgement", "response"]):
+                    self._mode = "streaming"
+                    out_frame = TextFrame(text=self._buffer)
+                    out_frame._turn_id = self._current_turn_id
+                    await self.push_frame(out_frame, direction)
+                    self._buffer = ""
                 return
 
         # 6. LLM response end
         elif isinstance(frame, LLMFullResponseEndFrame):
-            if self._mode == "json":
+            turn_id = getattr(frame, "_turn_id", self._current_turn_id)
+            current_turn_id = self._get_turn_id()
+            if turn_id is not None and turn_id < current_turn_id:
+                logger.warning(f"[FILLER] STALE_RESPONSE_END_DISCARDED | turn_id={turn_id}")
+                self._buffer = ""
+                self._mode = "detecting"
+                await self.push_frame(frame, direction)
+                return
+
+            if self._mode == "json" and self._buffer.strip():
                 # Final JSON parse of the complete response
                 try:
                     data = json.loads(self._buffer.strip())
@@ -246,7 +383,9 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                         self.shared_state["user_pause"] = True
                         logger.info(f"[FILLER] USER_PAUSE confirmed | {self._get_correlation()}")
                     elif resp and resp.strip():
-                        await self.push_frame(TextFrame(text=resp.strip()), direction)
+                        out_frame = TextFrame(text=resp.strip())
+                        out_frame._turn_id = self._current_turn_id
+                        await self.push_frame(out_frame, direction)
 
                     if call_end:
                         self.shared_state["hangup_requested"] = True
@@ -255,21 +394,25 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                     resp_m = re.search(r'\"response\"\s*:\s*\"((?:\\\\.|[^\"])*)', self._buffer)
                     wait_m = re.search(r'\"should_wait\"\s*:\s*(true|false)', self._buffer, re.I)
                     should_wait = (wait_m.group(1).lower() == "true") if wait_m else False
-                    
+
                     if not should_wait and resp_m:
                         clean_resp = resp_m.group(1).replace('\\"', '"').replace('\\n', ' ')
                         if clean_resp.strip():
-                            await self.push_frame(TextFrame(text=clean_resp.strip()), direction)
-            
-            elif self._mode == "tag":
-                # Flush any leftover response after tag
+                            out_frame = TextFrame(text=clean_resp.strip())
+                            out_frame._turn_id = self._current_turn_id
+                            await self.push_frame(out_frame, direction)
+
+            elif self._mode == "tag" and self._buffer.strip():
                 clean_tail = re.sub(r'<ack.*?>.*?</ack>', '', self._buffer, flags=re.DOTALL).strip()
                 if clean_tail and not self.shared_state.get("user_pause"):
-                    await self.push_frame(TextFrame(text=clean_tail), direction)
+                    out_frame = TextFrame(text=clean_tail)
+                    out_frame._turn_id = self._current_turn_id
+                    await self.push_frame(out_frame, direction)
 
-            elif self._mode in ("detecting", "passthrough"):
-                if self._buffer.strip():
-                    await self.push_frame(TextFrame(text=self._buffer), direction)
+            elif self._buffer.strip() and not self.shared_state.get("user_pause") and self._mode != "waiting":
+                out_frame = TextFrame(text=self._buffer)
+                out_frame._turn_id = self._current_turn_id
+                await self.push_frame(out_frame, direction)
 
             self._buffer = ""
             self._mode = "detecting"
@@ -278,3 +421,4 @@ class DynamicLLMFillerProcessor(FrameProcessor):
 
         else:
             await self.push_frame(frame, direction)
+
