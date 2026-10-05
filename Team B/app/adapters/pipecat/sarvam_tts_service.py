@@ -60,6 +60,22 @@ class LowLatencyClauseAggregator(BaseTextAggregator):
             if len(words) >= threshold:
                 split_idx = self._buffer.rfind(" ")
                 if split_idx > 0:
+                    # Prevent slicing through an active sequence of spaced phone digits
+                    digit_tokens = [w for w in words if w.isdigit() and len(w) == 1]
+                    if len(digit_tokens) >= 2:
+                        # If there is non-digit preamble before the digits (e.g. 'your number is'),
+                        # split before the first digit so the preamble can stream immediately.
+                        m = re.search(r'\s+(\d(?:\s+\d)*)', self._buffer)
+                        if m and m.start() > 0:
+                            preamble = self._buffer[:m.start()].strip()
+                            if len(preamble.split()) >= 2:
+                                self._buffer = self._buffer[m.start() + 1:]
+                                self._first_clause = False
+                                yield Aggregation(text=preamble, type=AggregationType.SENTENCE)
+                                continue
+                        # While accumulating remaining digits, wait for punctuation or flush
+                        break
+
                     phrase = self._buffer[:split_idx].strip()
                     self._buffer = self._buffer[split_idx + 1:]
                     self._first_clause = False

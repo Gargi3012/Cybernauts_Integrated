@@ -72,6 +72,10 @@ class DynamicLLMFillerProcessor(FrameProcessor):
         if not ack_text or not ack_text.strip():
             return
 
+        if self.shared_state.get("ending_call") or self.shared_state.get("termination_requested") or self.shared_state.get("hangup_requested"):
+            logger.info(f"[FILLER] Suppressing filler text during call termination: '{ack_text}'")
+            return
+
         turn_id = self._get_turn_id()
         self._ack_emitted = True
         self._filler_active = True
@@ -167,8 +171,13 @@ class DynamicLLMFillerProcessor(FrameProcessor):
 
             # Check call termination / pause suppression
             if self.shared_state.get("ending_call"):
-                logger.info(f"[FILLER] ENDING_CALL active: suppressing TextFrame")
-                return
+                ending_turn_id = self.shared_state.get("ending_call_turn_id")
+                current_turn_id = self.shared_state.get("current_turn_id", 0)
+                if ending_turn_id is not None and current_turn_id > ending_turn_id:
+                    logger.info(
+                        f"[FILLER] ENDING_CALL active: suppressing TextFrame for subsequent turn {current_turn_id}"
+                    )
+                    return
 
             if self._mode == "waiting" or self.shared_state.get("user_pause"):
                 return

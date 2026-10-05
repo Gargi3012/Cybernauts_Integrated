@@ -133,5 +133,11 @@
         "name": "Rahul Manchanda",
         "phone": "9876543210",
         "project_details": "Enterprise Voice AI"
+    },
+    {
+        "timestamp": "2026-10-05T09:10:41.501376",
+        "name": "Rahul Manchanda",
+        "phone": "9215024401",
+        "project_details": "Interested in automated workflows to handle customer calls, track customers, reduce manual calling, and improve slow follow-ups."
     }
 ]

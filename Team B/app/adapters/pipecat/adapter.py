@@ -367,6 +367,26 @@ def _build_real_pipeline_task(
             )
             register_session_context(session_id or "", context)
         
+        class FlowizUserAggregator(LLMUserAggregator):
+            """
+            Custom user speech aggregator that stamps aggregated user turns with source='USER_SPEECH',
+            allowing critical memory and context management to reliably distinguish genuine caller
+            speech from internal system instructions and operator prompts.
+            """
+            async def push_aggregation(self) -> str:
+                if len(self._aggregation) == 0:
+                    return ""
+
+                aggregation = self.aggregation_string()
+                await self.reset()
+                self._context.add_message({
+                    "role": self.role,
+                    "content": aggregation,
+                    "source": "USER_SPEECH",
+                })
+                await self.push_context_frame()
+                return aggregation
+
         from app.adapters.pipecat.turn_guard import ValidatedUserTurnStartStrategy, OptimizedUserTurnStopStrategy
         agg_params = LLMUserAggregatorParams(
             user_turn_strategies=UserTurnStrategies(
@@ -374,7 +394,7 @@ def _build_real_pipeline_task(
                 stop=[OptimizedUserTurnStopStrategy(user_speech_timeout=0.45, shared_state=shared_state)]
             )
         )
-        user_agg = LLMUserAggregator(context, params=agg_params)
+        user_agg = FlowizUserAggregator(context, params=agg_params)
         asst_agg = LLMAssistantAggregator(context)
         
         # Build enhanced pipeline sequence:
@@ -608,6 +628,7 @@ def _build_real_pipeline_task(
             elif isinstance(frame, TTSStartedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
                 logger.info(f"[VOICE] TTS input received / TTS audio started | source={source_class} | session_id={bridge._session_id}")
                 self._tts_speaking = True
+                shared_state["tts_speaking"] = True
                 if latency_tracker:
                     latency_tracker.on_tts_start()
                 bridge.on_audio_started()
@@ -620,6 +641,7 @@ def _build_real_pipeline_task(
             elif isinstance(frame, TTSStoppedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
                 logger.info(f"[VOICE] TTS audio playback completed | source={source_class} | session_id={bridge._session_id}")
                 self._tts_speaking = False
+                shared_state["tts_speaking"] = False
                 bridge.on_audio_finished()
                 self._first_audio_packet_sent = False
                 
@@ -868,7 +890,9 @@ class PipecatAdapter:
                             f"The phone call has just connected to the recipient{target_info}. "
                             "Deliver your opening greeting now, strictly following the call script, persona, and greeting instructions specified in your system instructions. "
                             "Make it a natural, polite, and concise opening turn (1-2 sentences). Do not read the entire script at once."
-                        )
+                        ),
+                        "source": "INTERNAL_GREETING",
+                        "is_internal_instruction": True,
                     }]
                     if hasattr(self.task, "_llm_context"):
                         for m in messages:
@@ -885,7 +909,9 @@ class PipecatAdapter:
                     logger.bind(session_id=self.session_id).info(f"Queueing dynamic outbound qualification greeting prompt for {greet_target}")
                     messages = [{
                         "role": "user", 
-                        "content": f"The outbound call has connected to {greet_target}. Greet them professionally and warmly as Sara from Flowiz and Cybernauts. Mention that you're reaching out regarding {c_name} and ask if they have a brief moment to speak about automating their operations."
+                        "content": f"The outbound call has connected to {greet_target}. Greet them professionally and warmly as Sara from Flowiz and Cybernauts. Mention that you're reaching out regarding {c_name} and ask if they have a brief moment to speak about automating their operations.",
+                        "source": "INTERNAL_GREETING",
+                        "is_internal_instruction": True,
                     }]
                     if hasattr(self.task, "_llm_context"):
                         for m in messages:
@@ -898,7 +924,9 @@ class PipecatAdapter:
                     logger.bind(session_id=self.session_id).info("Queueing dynamic returning customer greeting prompt")
                     messages = [{
                         "role": "user", 
-                        "content": "The user has just connected to the call. Please greet the returning customer naturally, referencing the previous conversation summary to personalize the greeting. Ask how you can assist them today. Do not use a fixed template, just be welcoming and concise."
+                        "content": "The user has just connected to the call. Please greet the returning customer naturally, referencing the previous conversation summary to personalize the greeting. Ask how you can assist them today. Do not use a fixed template, just be welcoming and concise.",
+                        "source": "INTERNAL_GREETING",
+                        "is_internal_instruction": True,
                     }]
                     # In Pipecat 1.5.0, BaseOpenAILLMService ignores LLMMessagesAppendFrame.
                     # We must modify the shared context directly and push LLMRunFrame downstream.

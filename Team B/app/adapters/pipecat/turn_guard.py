@@ -158,6 +158,11 @@ class TurnGuardFilter(FrameProcessor):
             # Drop stale audio/text frames
             return
 
+        if isinstance(frame, TTSStartedFrame):
+            self.shared_state["tts_speaking"] = True
+        elif isinstance(frame, TTSStoppedFrame):
+            self.shared_state["tts_speaking"] = False
+
         await self.push_frame(frame, direction)
 
 
@@ -230,9 +235,48 @@ class ValidatedUserTurnStartStrategy(BaseUserTurnStartStrategy):
             clean_text = re.sub(r'\[System:.*?\]', '', text).strip()
             if clean_text and not getattr(frame, "user_id", None) == "bot":
                 turn_id = self.shared_state.get("current_turn_id", 0)
+                words = clean_text.lower().split()
+                
+                # Safeguard: Interim transcripts and weak ambient noise are unconfirmed hypotheses.
+                # A single isolated interim word (e.g. 'You', 'Uh', 'The') caused by ambient noise,
+                # acoustic echo, or line leakage during bot speech must NOT cause immediate barge-in.
+                barge_in_keywords = {
+                    "wait", "stop", "hold", "ruko", "suno", "chup", "ek minute", "listen",
+                    "no", "nahi", "galat", "wrong", "sorry", "pause", "thoda ruko", "ek sec",
+                    "रुकिए", "रुको", "सुनिए", "सुनो", "चुप", "नहीं", "एक मिनट", "गलत", "माफ", "ठहरो"
+                }
+                clean_lower = clean_text.lower()
+                normalized_words = [re.sub(r'[^\w\s]', '', w) for w in words]
+                has_barge_keyword = (
+                    any(kw in clean_lower for kw in barge_in_keywords)
+                    or any(w in barge_in_keywords for w in normalized_words)
+                )
+                has_multi_words = len(words) >= 2 and len(clean_text) >= 6
+
+                # If it's an interim transcription, require barge keyword or multi-word speech
+                if isinstance(frame, InterimTranscriptionFrame):
+                    if not (has_barge_keyword or has_multi_words):
+                        logger.info(
+                            f"[INTERRUPTION_DIAGNOSTICS] VAD_INTERIM_NOISE_IGNORED | "
+                            f"turn_id={turn_id} | reason=single_interim_token | text='{clean_text}'"
+                        )
+                        return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
+
+                # If bot is actively speaking and it's a weak single noise word (e.g. 'you', 'uh', 'um', 'ah'),
+                # do not interrupt unless sustained speech or barge keyword is present
+                is_bot_speaking = self.shared_state.get("tts_speaking", False)
+                noise_tokens = {"you", "uh", "um", "ah", "the", "mm", "hmm"}
+                if is_bot_speaking and not (has_barge_keyword or has_multi_words):
+                    if any(w in noise_tokens for w in normalized_words):
+                        logger.info(
+                            f"[INTERRUPTION_DIAGNOSTICS] VAD_NOISE_IGNORED_DURING_TTS | "
+                            f"turn_id={turn_id} | text='{clean_text}'"
+                        )
+                        return ProcessFrameResult.CONTINUE if ProcessFrameResult else None
+
                 logger.info(
                     f"[INTERRUPTION_DIAGNOSTICS] VAD_INTERRUPTION_ACCEPTED | "
-                    f"turn_id={turn_id} | reason=transcript | text='{clean_text}'"
+                    f"turn_id={turn_id} | reason={'interim_transcript' if isinstance(frame, InterimTranscriptionFrame) else 'final_transcript'} | text='{clean_text}'"
                 )
                 self._triggered = True
                 await self.trigger_user_turn_started()
@@ -355,10 +399,8 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
         digit_speech_timeout (2.2s) when partial digits are being accumulated during PHONE_CAPTURE,
         or user_speech_timeout (0.45s) for normal conversation.
         """
-        phone_norm = self.shared_state.get("phone_normalizer")
         phone_confirmed = self.shared_state.get("phone_confirmed", False)
-        
-        in_phone_capture = phone_norm and len(phone_norm.digits) > 0 and not phone_confirmed
+        in_phone_capture = self.shared_state.get("in_phone_capture", False) and not phone_confirmed
 
         if not in_phone_capture:
             return self.user_speech_timeout
@@ -371,6 +413,7 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
 
         has_final_phrase = PhoneDigitNormalizer.detect_final_phrase(self._text) if self._text else False
 
+        phone_norm = self.shared_state.get("phone_normalizer")
         total_digits = ""
         if phone_norm and hasattr(phone_norm, "digits"):
             total_digits = phone_norm.digits
@@ -468,33 +511,46 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
                         for t in tokens
                     )
 
-                    if phone_norm:
-                        in_phone_capture = len(phone_norm.digits) > 0 and not self.shared_state.get("phone_confirmed", False)
-                        # Also enter phone capture if we see digit tokens
-                        if not in_phone_capture and has_digit_tokens:
-                            in_phone_capture = True
-                            
-                        if in_phone_capture:
-                            buf_before = phone_norm.digits if phone_norm else ""
-                            if phone_norm and segment_type != "duplicate":
-                                phone_norm.process_utterance(clean_text)
-                            buf_after = phone_norm.digits if phone_norm else ""
-                            status_val = phone_norm.status.value if phone_norm else "collecting"
+                    # Check phone capture state & update normalizer if present
+                    turn_id = self.shared_state.get("current_turn_id", 0)
+                    session_id = self.shared_state.get("session_id", "")
+                    phone_norm = self.shared_state.get("phone_normalizer")
+                    tokens = PhoneDigitNormalizer.extract_tokens(clean_text)
+                    has_digit_tokens = any(
+                        t.token_type in (TokenType.DIGIT, TokenType.MULTIPLIER, TokenType.TIME_LIKE_AMBIGUOUS)
+                        for t in tokens
+                    )
+                    phone_confirmed = self.shared_state.get("phone_confirmed", False)
+                    in_phone_capture = self.shared_state.get("in_phone_capture", False) and not phone_confirmed
 
-                            speech_final = bool(getattr(frame, "speech_final", False))
-                            log_deepgram_diagnostic_event(
-                                session_id=session_id,
-                                turn_id=turn_id,
-                                transcript=clean_text,
-                                is_final=True,
-                                speech_final=speech_final,
-                                confidence=float(getattr(frame, "confidence", 1.0) or 1.0),
-                                words=getattr(frame, "words", None),
-                                segment_type=segment_type,
-                                buffer_before=buf_before,
-                                buffer_after=buf_after,
-                                validation_status=status_val,
-                            )
+                    # Enter phone capture from user speech ONLY if user explicitly provides phone context with digits
+                    if not in_phone_capture and has_digit_tokens:
+                        has_phone_kw = bool(re.search(r'\b(phone|mobile|number|no\.|contact|whatsapp)\b', clean_text, re.I))
+                        if has_phone_kw:
+                            in_phone_capture = True
+                            self.shared_state["in_phone_capture"] = True
+
+                    if phone_norm and in_phone_capture:
+                        buf_before = phone_norm.digits if phone_norm else ""
+                        if phone_norm and segment_type != "duplicate":
+                            phone_norm.process_utterance(clean_text)
+                        buf_after = phone_norm.digits if phone_norm else ""
+                        status_val = phone_norm.status.value if phone_norm else "collecting"
+
+                        speech_final = bool(getattr(frame, "speech_final", False))
+                        log_deepgram_diagnostic_event(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            transcript=clean_text,
+                            is_final=True,
+                            speech_final=speech_final,
+                            confidence=float(getattr(frame, "confidence", 1.0) or 1.0),
+                            words=getattr(frame, "words", None),
+                            segment_type=segment_type,
+                            buffer_before=buf_before,
+                            buffer_after=buf_after,
+                            validation_status=status_val,
+                        )
 
                     active_timeout = self._get_active_speech_timeout()
 
@@ -527,18 +583,10 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
                 import re
                 clean_text = re.sub(r'\[System:.*?\]', '', text).strip()
                 phone_norm = self.shared_state.get("phone_normalizer")
-                in_phone_capture = False
-                if phone_norm:
-                    in_phone_capture = len(phone_norm.digits) > 0 and not self.shared_state.get("phone_confirmed", False)
-                    # Also check for digits in the interim transcript
-                    if not in_phone_capture:
-                        from app.services.phone_digit_normalizer import PhoneDigitNormalizer, TokenType
-                        tokens = PhoneDigitNormalizer.extract_tokens(clean_text)
-                        has_digit_tokens = any(t.token_type in (TokenType.DIGIT, TokenType.MULTIPLIER, TokenType.TIME_LIKE_AMBIGUOUS) for t in tokens)
-                        if has_digit_tokens:
-                            in_phone_capture = True
+                phone_confirmed = self.shared_state.get("phone_confirmed", False)
+                in_phone_capture = self.shared_state.get("in_phone_capture", False) and not phone_confirmed
                             
-                if in_phone_capture:
+                if in_phone_capture and phone_norm:
                     from app.services.phone_digit_normalizer import log_deepgram_diagnostic_event
                     turn_id = self.shared_state.get("current_turn_id", 0)
                     session_id = self.shared_state.get("session_id", "")
