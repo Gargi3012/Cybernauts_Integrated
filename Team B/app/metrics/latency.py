@@ -290,21 +290,40 @@ class LatencyTracker:
             if turn_name != "Greeting":
                 turn_name = f"Turn {turn_name}"
 
-            tts_lat = t.tts_first_audio - t.llm_complete
-            valid_tts.append(tts_lat)
+            # Calculate TTS latency safely
+            tts_lat = None
+            if t.tts_first_audio is not None:
+                if t.tts_first_text is not None:
+                    tts_lat = t.tts_first_audio - t.tts_first_text
+                elif t.llm_complete is not None:
+                    tts_lat = t.tts_first_audio - t.llm_complete
+                elif t.llm_first_token is not None:
+                    tts_lat = t.tts_first_audio - t.llm_first_token
+
+            if tts_lat is not None:
+                valid_tts.append(tts_lat)
+                tts_str = f"{tts_lat:.2f} s"
+            else:
+                tts_str = "--"
 
             if t.turn_number == "Greeting":
                 thinking_str = "--"
                 total_str = "--"
             else:
-                thinking = t.llm_first_token - t.vad_stop
-                total = t.tts_first_audio - t.vad_stop
-                thinking_str = f"{thinking:.2f} s"
-                total_str = f"{total:.2f} s"
-                valid_thinking.append(thinking)
-                valid_total.append(total)
+                if t.llm_first_token is not None and t.vad_stop is not None:
+                    thinking = t.llm_first_token - t.vad_stop
+                    thinking_str = f"{thinking:.2f} s"
+                    valid_thinking.append(thinking)
+                else:
+                    thinking_str = "--"
 
-            tts_str = f"{tts_lat:.2f} s"
+                if t.tts_first_audio is not None and t.vad_stop is not None:
+                    total = t.tts_first_audio - t.vad_stop
+                    total_str = f"{total:.2f} s"
+                    valid_total.append(total)
+                else:
+                    total_str = "--"
+
             print(f"{turn_name:<15}{thinking_str:<15}{tts_str:<15}{total_str:<15}")
 
         print("-" * 63)
