@@ -515,7 +515,13 @@ class SlidingWindowLLMContext(LLMContext):
         for msg in messages:
             self.add_message(msg)
 
-    def get_messages(self, llm_specific_filter: Optional[str] = None) -> List[dict]:
+    def get_messages(
+        self,
+        llm_specific_filter: Optional[str] = None,
+        *args,
+        truncate_large_values: bool = False,
+        **kwargs,
+    ) -> List[dict]:
         """
         Constructs and returns the sliding window context for the LLM request.
         
@@ -523,7 +529,16 @@ class SlidingWindowLLMContext(LLMContext):
         - Index 0: System prompt enhanced with dynamic `<critical_conversation_memory>`
         - Index 1..N: Most recent `max_window_messages` conversation messages
         """
-        messages = self._messages
+        if llm_specific_filter is None:
+            messages = self._messages
+        else:
+            from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
+            messages = [
+                msg
+                for msg in self._messages
+                if not isinstance(msg, LLMSpecificMessage) or getattr(msg, "llm", None) == llm_specific_filter
+            ]
+
         if not messages:
             return []
 
@@ -558,6 +573,10 @@ class SlidingWindowLLMContext(LLMContext):
             recent_messages = non_system_messages
 
         result = [{"role": "system", "content": dynamic_system_content}] + recent_messages
+
+        if truncate_large_values and hasattr(LLMContext, "_truncate_large_values_from_messages"):
+            result = LLMContext._truncate_large_values_from_messages(result)
+
         return result
 
     @property
