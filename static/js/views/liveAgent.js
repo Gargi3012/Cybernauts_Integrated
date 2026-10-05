@@ -203,6 +203,88 @@ class LiveAgentView {
     }
   }
 
+  async placeCall({ phone, customerName, customerCtx, callPrompt, leadId, companyName }, container, triggerBtn) {
+    if (!phone) {
+      alert('Please enter a phone number in E.164 format (e.g. +917082968702).');
+      return;
+    }
+
+    const origBtnHtml = triggerBtn ? triggerBtn.innerHTML : null;
+    try {
+      if (triggerBtn) {
+        triggerBtn.disabled = true;
+        triggerBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Calling...</span>';
+      }
+
+      // Check if dialed phone matches a known lead
+      const matchingLead = (window.store.allLeads || []).find(l => 
+        Array.isArray(l.phones) && l.phones.some(p => p.replace(/[^\d]/g, '').endsWith(phone.replace(/[^\d]/g, '').slice(-10)))
+      );
+
+      const resolvedLeadId = leadId || (matchingLead ? (matchingLead.domain || matchingLead.website) : (customerName ? customerName.toLowerCase().replace(/[^a-z0-9]/g, '_') : 'manual_dial'));
+      const resolvedCompanyName = companyName || customerName || (matchingLead ? matchingLead.company_name : 'Manual Telecom Call');
+      const sessionId = 'sess_' + Date.now();
+      const dispatchId = 'disp_' + Date.now();
+
+      // Reset transcripts for a fresh call
+      window.store.clearTranscripts();
+
+      window.store.setActiveCall({
+        lead_id: resolvedLeadId,
+        dispatch_id: dispatchId,
+        session_id: sessionId,
+        call_uuid: 'pending',
+        company_name: resolvedCompanyName,
+        phone: phone,
+        call_prompt: callPrompt || undefined,
+        has_call_prompt: Boolean(callPrompt),
+        call_prompt_len: callPrompt ? callPrompt.length : 0,
+        call_status: 'initiating'
+      });
+
+      this.startCallTimer();
+      this.render(container);
+
+      const companyContext = {
+        lead_id: resolvedLeadId,
+        company_name: resolvedCompanyName,
+        domain: matchingLead ? (matchingLead.domain || matchingLead.website) : resolvedLeadId,
+        industry: matchingLead ? matchingLead.industry : 'B2B Services',
+        location: matchingLead ? matchingLead.location : 'India',
+        company_summary: customerCtx || (matchingLead ? matchingLead.description : 'Outbound qualification prospect')
+      };
+
+      const payload = {
+        phoneNumber: phone,
+        phone_number: phone,
+        company_context: companyContext,
+        lead_id: resolvedLeadId,
+        session_id: sessionId,
+        dispatch_id: dispatchId,
+        call_prompt: callPrompt || undefined
+      };
+
+      const res = await window.api.triggerOutboundCall(phone, payload);
+      if (res && res.status === 'success') {
+        window.store.updateActiveCall({
+          call_status: 'in_progress',
+          call_uuid: res.callSid || res.call_id
+        });
+        this.render(container);
+      }
+    } catch (err) {
+      alert('Failed to place outbound call: ' + (err.message || err));
+      window.store.clearActiveCall();
+      this.stopCallTimer();
+      this.render(container);
+    } finally {
+      if (triggerBtn && origBtnHtml) {
+        triggerBtn.disabled = false;
+        triggerBtn.innerHTML = origBtnHtml;
+      }
+    }
+  }
+
   render(container) {
     const activeCall = window.store.activeCall;
     const voiceState = window.store.voiceState;
@@ -262,16 +344,21 @@ class LiveAgentView {
                 <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Duration</div>
                 <div class="font-mono" style="font-size: 18px; font-weight: 700; color: var(--text-primary);" id="liveCallDuration">00:00</div>
               </div>
-              <span class="badge ${activeCall.call_status === 'completed' ? 'badge-success' : 'badge-warning'}" style="font-size: 12px; padding: 6px 12px;">
-                ${activeCall.call_status === 'completed' ? '✓ Call Completed' : '● ' + (activeCall.call_status || 'In Progress')}
+              <span class="badge ${activeCall.call_status === 'completed' ? 'badge-success' : (['failed', 'busy', 'no-answer'].includes(activeCall.call_status) ? 'badge-danger' : 'badge-warning')}" style="font-size: 12px; padding: 6px 12px;">
+                ${activeCall.call_status === 'completed' ? '✓ Call Completed' : (activeCall.call_status === 'failed' ? '✕ Call Failed' : (activeCall.call_status === 'busy' ? '☎ Line Busy' : (activeCall.call_status === 'no-answer' ? '⊘ No Answer' : '● ' + (activeCall.call_status || 'In Progress'))))}
               </span>
-              ${activeCall.call_status !== 'completed' ? `
-                <button class="btn btn-sm" id="btnHangupLiveCall" style="background: #dc2626; border: 1px solid #b91c1c; color: #ffffff; padding: 6px 12px; font-weight: 700; cursor: pointer;" title="Immediately hang up phone call">
-                  <i class="fa-solid fa-phone-slash" style="margin-right: 4px;"></i>Hang Up
+              ${['completed', 'failed', 'busy', 'no-answer'].includes(activeCall.call_status) ? `
+                <button class="btn btn-sm" id="btnCallAgainTelephony" style="background: #16a34a; border: 1px solid #15803d; color: #ffffff; padding: 6px 14px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(22, 163, 74, 0.3);" title="Call ${activeCall.phone} again immediately with the same script">
+                  <i class="fa-solid fa-rotate-right"></i>
+                  <span>Call Again (${activeCall.phone})</span>
+                </button>
+                <button class="btn btn-sm btn-secondary" id="btnNewCallTelephony" style="padding: 6px 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 5px;" title="Enter and dial a different phone number">
+                  <i class="fa-solid fa-plus"></i>
+                  <span>Dial New Number</span>
                 </button>
               ` : `
-                <button class="btn btn-sm btn-primary" id="btnNewCallTelephony" style="background: #6b21a8; border: 1px solid #581c87; color: #ffffff; padding: 6px 14px; font-weight: 700; cursor: pointer;" title="Dial another phone number">
-                  <i class="fa-solid fa-phone" style="margin-right: 4px;"></i>Dial Another Number
+                <button class="btn btn-sm" id="btnHangupLiveCall" style="background: #dc2626; border: 1px solid #b91c1c; color: #ffffff; padding: 6px 12px; font-weight: 700; cursor: pointer;" title="Immediately hang up phone call">
+                  <i class="fa-solid fa-phone-slash" style="margin-right: 4px;"></i>Hang Up
                 </button>
               `}
               <button class="btn btn-sm btn-secondary" id="btnDismissCallHero" style="padding: 6px 10px; font-size: 12px; cursor: pointer;" title="Dismiss call summary">
@@ -313,16 +400,21 @@ class LiveAgentView {
               <div style="font-size: 12.5px; color: #047857; margin-bottom: 8px;">
                 ${activeCall.qualification.conversation_summary || 'Outbound qualification concluded successfully.'}
               </div>
-              <button class="btn btn-secondary btn-sm" id="btnBackToLead" data-domain="${activeCall.lead_id}">
-                <i class="fa-solid fa-address-card"></i> Return to Updated Lead Dossier
-              </button>
+              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <button class="btn btn-sm" id="btnCallAgainFromCard" style="background: #16a34a; border: 1px solid #15803d; color: #ffffff; padding: 6px 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Call ${activeCall.phone} again immediately">
+                  <i class="fa-solid fa-rotate-right"></i> Re-call ${activeCall.phone}
+                </button>
+                <button class="btn btn-secondary btn-sm" id="btnBackToLead" data-domain="${activeCall.lead_id}">
+                  <i class="fa-solid fa-address-card"></i> Return to Updated Lead Dossier
+                </button>
+              </div>
             </div>
           ` : ''}
         </div>
       ` : ''}
 
       <!-- DIALER & CALL PROMPTING CONSOLE (WHEN IN TELEPHONY MODE & NO ACTIVE UNFINISHED CALL) -->
-      ${this.activeMode === 'telephony' && (!activeCall || activeCall.call_status === 'completed') ? `
+      ${this.activeMode === 'telephony' && (!activeCall || ['completed', 'failed', 'busy', 'no-answer'].includes(activeCall.call_status)) ? `
         <div class="card" style="margin-bottom: 20px; padding: 24px; border: 1px solid var(--border-color); box-shadow: var(--shadow-sm);">
           <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 14px; flex-wrap: wrap; gap: 12px;">
             <div>
@@ -355,7 +447,7 @@ class LiveAgentView {
                 id="txtManualPhone" 
                 class="form-input font-mono" 
                 placeholder="e.g. +917082968702" 
-                value="+917082968702"
+                value="${(activeCall && activeCall.phone) ? activeCall.phone : '+917082968702'}" 
                 style="font-size: 13.5px; width: 100%;"
               />
             </div>
@@ -368,7 +460,7 @@ class LiveAgentView {
                 id="txtCustomerName" 
                 class="form-input" 
                 placeholder="e.g. Cybernauts Technologies" 
-                value=""
+                value="${(activeCall && activeCall.company_name) ? activeCall.company_name : ''}" 
                 style="font-size: 13.5px; width: 100%;"
               />
             </div>
@@ -381,7 +473,7 @@ class LiveAgentView {
                 id="txtCustomerContext" 
                 class="form-input" 
                 placeholder="e.g. AI automation software, looking to automate qualification" 
-                value=""
+                value="" 
                 style="font-size: 13.5px; width: 100%;"
               />
             </div>
@@ -401,7 +493,7 @@ class LiveAgentView {
                   <option value="ai_automation">AI Voice Automation Pitch</option>
                   <option value="executive_followup">Executive Follow-Up</option>
                 </select>
-                <span id="callPromptCharCountLive" style="font-size: 11px; font-family: monospace; color: var(--text-muted);">0 / 2500</span>
+                <span id="callPromptCharCountLive" style="font-size: 11px; font-family: monospace; color: var(--text-muted);">${(activeCall && activeCall.call_prompt) ? activeCall.call_prompt.length : 0} / 2500</span>
                 <button type="button" id="btnClearPromptLive" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 11px;">Clear</button>
               </div>
             </div>
@@ -413,7 +505,7 @@ class LiveAgentView {
               maxlength="2500" 
               placeholder="Write what this call is about, topics to discuss, questions to ask, qualification criteria, and how the AI agent should handle the customer. (e.g. Introduce yourself as Sara from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."
               style="width: 100%; font-size: 12.5px; line-height: 1.45; resize: vertical; font-family: inherit;"
-            ></textarea>
+            >${(activeCall && activeCall.call_prompt) ? activeCall.call_prompt : ''}</textarea>
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap; gap: 6px;">
               <span style="display: flex; align-items: center; gap: 4px;">
@@ -582,13 +674,51 @@ class LiveAgentView {
       });
     }
 
-    // Start New Call / Redial button
+    // Call Again (re-dial same number with same script)
+    const btnCallAgain = container.querySelector('#btnCallAgainTelephony');
+    if (btnCallAgain) {
+      btnCallAgain.addEventListener('click', async () => {
+        const activeCall = window.store.activeCall;
+        if (!activeCall || !activeCall.phone) return;
+        await this.placeCall({
+          phone: activeCall.phone,
+          customerName: activeCall.company_name || '',
+          customerCtx: '',
+          callPrompt: activeCall.call_prompt || '',
+          leadId: activeCall.lead_id || '',
+          companyName: activeCall.company_name || ''
+        }, container, btnCallAgain);
+      });
+    }
+
+    const btnCallAgainCard = container.querySelector('#btnCallAgainFromCard');
+    if (btnCallAgainCard) {
+      btnCallAgainCard.addEventListener('click', async () => {
+        const activeCall = window.store.activeCall;
+        if (!activeCall || !activeCall.phone) return;
+        await this.placeCall({
+          phone: activeCall.phone,
+          customerName: activeCall.company_name || '',
+          customerCtx: '',
+          callPrompt: activeCall.call_prompt || '',
+          leadId: activeCall.lead_id || '',
+          companyName: activeCall.company_name || ''
+        }, container, btnCallAgainCard);
+      });
+    }
+
+    // Start New Call / Dial New Number button
     const btnNewCall = container.querySelector('#btnNewCallTelephony');
     if (btnNewCall) {
       btnNewCall.addEventListener('click', () => {
         window.store.clearActiveCall();
         this.stopCallTimer();
         this.render(container);
+        const phoneInput = container.querySelector('#txtManualPhone');
+        if (phoneInput) {
+          phoneInput.value = '';
+          phoneInput.focus();
+        }
       });
     }
 
@@ -688,82 +818,16 @@ class LiveAgentView {
     if (btnDial && txtPhone) {
       btnDial.addEventListener('click', async () => {
         const phone = txtPhone.value.trim();
-        if (!phone) {
-          alert('Please enter a phone number in E.164 format (e.g. +917082968702).');
-          return;
-        }
-
         const customerName = txtCustName ? txtCustName.value.trim() : '';
         const customerCtx = txtCustCtx ? txtCustCtx.value.trim() : '';
         const callPrompt = txtPrompt ? txtPrompt.value.trim() : '';
 
-        try {
-          btnDial.disabled = true;
-          btnDial.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Initiating Call...</span>';
-
-          // Check if dialed phone matches a known lead
-          const matchingLead = (window.store.allLeads || []).find(l => 
-            Array.isArray(l.phones) && l.phones.some(p => p.replace(/[^\d]/g, '').endsWith(phone.replace(/[^\d]/g, '').slice(-10)))
-          );
-
-          const leadId = matchingLead ? (matchingLead.domain || matchingLead.website) : (customerName ? customerName.toLowerCase().replace(/[^a-z0-9]/g, '_') : 'manual_dial');
-          const companyName = customerName || (matchingLead ? matchingLead.company_name : 'Manual Telecom Call');
-          const sessionId = 'sess_' + Date.now();
-          const dispatchId = 'disp_' + Date.now();
-
-          window.store.setActiveCall({
-            lead_id: leadId,
-            dispatch_id: dispatchId,
-            session_id: sessionId,
-            call_uuid: 'pending',
-            company_name: companyName,
-            phone: phone,
-            call_prompt: callPrompt || undefined,
-            has_call_prompt: Boolean(callPrompt),
-            call_prompt_len: callPrompt ? callPrompt.length : 0,
-            call_status: 'initiating'
-          });
-
-          this.startCallTimer();
-
-          const companyContext = {
-            lead_id: leadId,
-            company_name: companyName,
-            domain: matchingLead ? (matchingLead.domain || matchingLead.website) : leadId,
-            industry: matchingLead ? matchingLead.industry : 'B2B Services',
-            location: matchingLead ? matchingLead.location : 'India',
-            company_summary: customerCtx || (matchingLead ? matchingLead.description : 'Outbound qualification prospect')
-          };
-
-          const payload = {
-            phoneNumber: phone,
-            phone_number: phone,
-            company_context: companyContext,
-            lead_id: leadId,
-            session_id: sessionId,
-            dispatch_id: dispatchId,
-            call_prompt: callPrompt || undefined
-          };
-
-          const res = await window.api.triggerOutboundCall(phone, payload);
-          if (res && res.status === 'success') {
-            window.store.updateActiveCall({
-              call_status: 'in_progress',
-              call_uuid: res.callSid || res.call_id
-            });
-            this.render(container);
-          }
-        } catch (err) {
-          alert('Failed to place outbound call: ' + (err.message || err));
-          window.store.clearActiveCall();
-          this.stopCallTimer();
-          this.render(container);
-        } finally {
-          if (btnDial) {
-            btnDial.disabled = false;
-            btnDial.innerHTML = '<i class="fa-solid fa-phone-volume"></i><span>Launch AI Call with Script</span>';
-          }
-        }
+        await this.placeCall({
+          phone,
+          customerName,
+          customerCtx,
+          callPrompt
+        }, container, btnDial);
       });
     }
 
