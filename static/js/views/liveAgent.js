@@ -9,7 +9,9 @@
 class LiveAgentView {
   constructor() {
     this.activeMode = 'telephony'; // 'telephony' (Plivo) or 'livekit' (WebRTC)
-    this.room = null;
+    this.livekitRoom = null;
+    this.isLiveKitConnected = false;
+    this.isLiveKitConnecting = false;
     this.ws = null;
     this.isWsConnected = false;
     this.callTimer = null;
@@ -255,7 +257,7 @@ class LiveAgentView {
             </div>
 
             <!-- Call State & Timer -->
-            <div style="display: flex; align-items: center; gap: 16px;">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
               <div style="text-align: right;">
                 <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Duration</div>
                 <div class="font-mono" style="font-size: 18px; font-weight: 700; color: var(--text-primary);" id="liveCallDuration">00:00</div>
@@ -267,7 +269,14 @@ class LiveAgentView {
                 <button class="btn btn-sm" id="btnHangupLiveCall" style="background: #dc2626; border: 1px solid #b91c1c; color: #ffffff; padding: 6px 12px; font-weight: 700; cursor: pointer;" title="Immediately hang up phone call">
                   <i class="fa-solid fa-phone-slash" style="margin-right: 4px;"></i>Hang Up
                 </button>
-              ` : ''}
+              ` : `
+                <button class="btn btn-sm btn-primary" id="btnNewCallTelephony" style="background: #6b21a8; border: 1px solid #581c87; color: #ffffff; padding: 6px 14px; font-weight: 700; cursor: pointer;" title="Dial another phone number">
+                  <i class="fa-solid fa-phone" style="margin-right: 4px;"></i>Dial Another Number
+                </button>
+              `}
+              <button class="btn btn-sm btn-secondary" id="btnDismissCallHero" style="padding: 6px 10px; font-size: 12px; cursor: pointer;" title="Dismiss call summary">
+                <i class="fa-solid fa-xmark"></i>
+              </button>
             </div>
           </div>
 
@@ -312,8 +321,8 @@ class LiveAgentView {
         </div>
       ` : ''}
 
-      <!-- DIALER & CALL PROMPTING CONSOLE (WHEN IN TELEPHONY MODE & NO ACTIVE LEAD CALL) -->
-      ${this.activeMode === 'telephony' && !activeCall ? `
+      <!-- DIALER & CALL PROMPTING CONSOLE (WHEN IN TELEPHONY MODE & NO ACTIVE UNFINISHED CALL) -->
+      ${this.activeMode === 'telephony' && (!activeCall || activeCall.call_status === 'completed') ? `
         <div class="card" style="margin-bottom: 20px; padding: 24px; border: 1px solid var(--border-color); box-shadow: var(--shadow-sm);">
           <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 14px; flex-wrap: wrap; gap: 12px;">
             <div>
@@ -431,17 +440,38 @@ class LiveAgentView {
 
       <!-- WEBRTC BROWSER VOICE MODE (IF IN LIVEKIT MODE) -->
       ${this.activeMode === 'livekit' ? `
-        <div class="card" style="margin-bottom: 20px; padding: 24px;">
+        <div class="card" style="margin-bottom: 20px; padding: 24px; border: 1px solid ${this.isLiveKitConnected ? 'rgba(107, 33, 168, 0.4)' : 'var(--border-color)'}; background: ${this.isLiveKitConnected ? 'linear-gradient(180deg, #faf5ff 0%, #ffffff 100%)' : 'var(--bg-card)'};">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-            <div>
-              <h3 style="margin: 0 0 4px 0; font-size: 16px; font-weight: 700;">In-Browser WebRTC Voice Session</h3>
-              <div class="text-muted" style="font-size: 13px;">Connect your microphone and speak directly with the AI Agent in real-time.</div>
+            <div style="display: flex; align-items: center; gap: 14px;">
+              <div style="width: 44px; height: 44px; border-radius: 10px; background: ${this.isLiveKitConnected ? '#6b21a8' : 'var(--bg-surface-secondary)'}; color: ${this.isLiveKitConnected ? '#fff' : 'var(--text-secondary)'}; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+                <i class="fa-solid fa-headset ${this.isLiveKitConnected ? 'fa-beat-fade' : ''}"></i>
+              </div>
+              <div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: var(--text-primary);">In-Browser WebRTC Voice Session</h3>
+                  <span class="badge ${this.isLiveKitConnected ? 'badge-success' : 'badge-neutral'}" style="font-size: 11px;">
+                    ${this.isLiveKitConnected ? '● Connected & Speaking' : (this.isLiveKitConnecting ? '● Connecting...' : '○ Disconnected')}
+                  </span>
+                </div>
+                <div class="text-muted" style="font-size: 13px; margin-top: 2px;">
+                  ${this.isLiveKitConnected 
+                    ? 'Microphone active (Camera OFF). Speak naturally; the AI Agent will respond in real time.' 
+                    : 'Connect your microphone and speak directly with Sara AI in English & Hindi with zero latency.'}
+                </div>
+              </div>
             </div>
-            <div>
-              <button class="btn btn-primary" id="btnConnectLiveKit">
-                <i class="fa-solid fa-microphone"></i>
-                <span>Connect Live Microphone</span>
-              </button>
+            <div style="display: flex; gap: 10px; align-items: center;">
+              ${this.isLiveKitConnected ? `
+                <button class="btn" id="btnDisconnectLiveKit" style="background: #dc2626; border: 1px solid #b91c1c; color: #fff; padding: 9px 18px; font-weight: 700; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Hang up and stop microphone">
+                  <i class="fa-solid fa-phone-slash"></i>
+                  <span>Hang Up / Disconnect</span>
+                </button>
+              ` : `
+                <button class="btn btn-primary" id="btnConnectLiveKit" ${this.isLiveKitConnecting ? 'disabled' : ''} style="background: #6b21a8; border-color: #581c87; padding: 9px 20px; font-weight: 700; border-radius: 6px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                  <i class="fa-solid ${this.isLiveKitConnecting ? 'fa-circle-notch fa-spin' : 'fa-microphone'}"></i>
+                  <span>${this.isLiveKitConnecting ? 'Connecting...' : 'Connect Live Microphone'}</span>
+                </button>
+              `}
             </div>
           </div>
         </div>
@@ -536,6 +566,9 @@ class LiveAgentView {
     const tabTelephony = container.querySelector('#tabModeTelephony');
     if (tabTelephony) {
       tabTelephony.addEventListener('click', () => {
+        if (this.isLiveKitConnected) {
+          this.disconnectLiveKit(container);
+        }
         this.activeMode = 'telephony';
         this.render(container);
       });
@@ -545,6 +578,26 @@ class LiveAgentView {
     if (tabLiveKit) {
       tabLiveKit.addEventListener('click', () => {
         this.activeMode = 'livekit';
+        this.render(container);
+      });
+    }
+
+    // Start New Call / Redial button
+    const btnNewCall = container.querySelector('#btnNewCallTelephony');
+    if (btnNewCall) {
+      btnNewCall.addEventListener('click', () => {
+        window.store.clearActiveCall();
+        this.stopCallTimer();
+        this.render(container);
+      });
+    }
+
+    // Dismiss active call hero card
+    const btnDismiss = container.querySelector('#btnDismissCallHero');
+    if (btnDismiss) {
+      btnDismiss.addEventListener('click', () => {
+        window.store.clearActiveCall();
+        this.stopCallTimer();
         this.render(container);
       });
     }
@@ -735,31 +788,138 @@ class LiveAgentView {
       });
     }
 
-    // LiveKit WebRTC Join
+    // LiveKit WebRTC Connect & Disconnect handlers
     const btnConnectLiveKit = container.querySelector('#btnConnectLiveKit');
     if (btnConnectLiveKit) {
-      btnConnectLiveKit.addEventListener('click', async () => {
-        try {
-          btnConnectLiveKit.disabled = true;
-          btnConnectLiveKit.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Connecting...</span>';
-          
-          const res = await window.api.joinLiveKit();
-          if (res && res.token && res.roomUrl && window.LivekitClient) {
-            const room = new window.LivekitClient.Room();
-            await room.connect(res.roomUrl, res.token);
-            await room.localParticipant.enableCameraAndMicrophone();
-            alert('Connected to LiveKit in-browser audio room!');
-          } else {
-            alert('LiveKit token generated. Active on server.');
-          }
-        } catch (err) {
-          alert('LiveKit connection: ' + (err.message || err));
-        } finally {
-          btnConnectLiveKit.disabled = false;
-          btnConnectLiveKit.innerHTML = '<i class="fa-solid fa-microphone"></i><span>Connect Live Microphone</span>';
-        }
+      btnConnectLiveKit.addEventListener('click', () => {
+        this.connectLiveKit(container);
       });
     }
+
+    const btnDisconnectLiveKit = container.querySelector('#btnDisconnectLiveKit');
+    if (btnDisconnectLiveKit) {
+      btnDisconnectLiveKit.addEventListener('click', () => {
+        this.disconnectLiveKit(container);
+      });
+    }
+  }
+
+  async connectLiveKit(container) {
+    if (this.isLiveKitConnected || this.isLiveKitConnecting) return;
+    this.isLiveKitConnecting = true;
+    this.render(container);
+
+    try {
+      const res = await window.api.joinLiveKit();
+      if (!res || !res.token || !res.roomUrl) {
+        throw new Error(res?.detail || 'Could not retrieve LiveKit credentials from server.');
+      }
+
+      if (!window.LivekitClient) {
+        throw new Error('LiveKit WebRTC client library is not loaded in browser.');
+      }
+
+      // Cleanup any previous session/tracks first
+      this.cleanupLiveKit();
+
+      const room = new window.LivekitClient.Room({
+        adaptiveStream: true,
+        dynacast: true,
+        audioCaptureDefaults: {
+          autoGainControl: true,
+          echoCancellation: true,
+          noiseSuppression: true,
+        }
+      });
+      this.livekitRoom = room;
+
+      // CRITICAL: When remote bot publishes audio, attach it to DOM and play so user hears the AI speak!
+      room.on(window.LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+        console.log('[LiveKit] Remote track subscribed:', track.kind, 'from', participant.identity);
+        if (track.kind === window.LivekitClient.Track.Kind.Audio) {
+          const audioElement = track.attach();
+          audioElement.id = 'livekit-bot-audio-' + (track.sid || Date.now());
+          audioElement.autoplay = true;
+          document.body.appendChild(audioElement);
+          audioElement.play().catch(e => {
+            console.warn('[LiveKit] Autoplay warning on track:', e);
+          });
+        }
+      });
+
+      room.on(window.LivekitClient.RoomEvent.TrackUnsubscribed, (track) => {
+        track.detach().forEach(el => el.remove());
+      });
+
+      room.on(window.LivekitClient.RoomEvent.Disconnected, () => {
+        console.log('[LiveKit] Room disconnected event received.');
+        this.cleanupLiveKit();
+        this.render(container);
+      });
+
+      // Connect to LiveKit Cloud Room
+      await room.connect(res.roomUrl, res.token);
+
+      // Unlock AudioContext for modern browser autoplay security policies
+      await room.startAudio().catch(e => console.warn('[LiveKit] startAudio warning:', e));
+
+      // CRITICAL: ONLY enable Microphone (NO CAMERA! Explicitly audio-only)
+      await room.localParticipant.setMicrophoneEnabled(true);
+
+      this.isLiveKitConnected = true;
+      this.isLiveKitConnecting = false;
+
+      window.store.setVoiceState({
+        isCallActive: true,
+        callMode: 'livekit',
+        speakerState: 'idle',
+        statusMessage: 'LiveKit session connected. Microphone active (Camera OFF). Start speaking!'
+      });
+
+      window.store.addTranscript('system', 'LiveKit WebRTC audio session connected. Sara AI is listening.');
+      this.render(container);
+
+    } catch (err) {
+      console.error('[LiveKit ERROR]', err);
+      this.cleanupLiveKit();
+      this.isLiveKitConnecting = false;
+      alert('LiveKit Connection Error: ' + (err.message || err));
+      this.render(container);
+    }
+  }
+
+  cleanupLiveKit() {
+    if (this.livekitRoom) {
+      try {
+        // Explicitly stop all local tracks so browser microphone icon / camera hardware is released immediately!
+        if (this.livekitRoom.localParticipant) {
+          this.livekitRoom.localParticipant.tracks.forEach(pub => {
+            if (pub.track) {
+              pub.track.stop();
+            }
+          });
+        }
+        this.livekitRoom.disconnect();
+      } catch (e) {
+        console.warn('[LiveKit] Disconnect notice:', e);
+      }
+      this.livekitRoom = null;
+    }
+    // Remove attached audio elements from body
+    document.querySelectorAll("[id^='livekit-bot-audio-']").forEach(el => el.remove());
+    this.isLiveKitConnected = false;
+    this.isLiveKitConnecting = false;
+  }
+
+  disconnectLiveKit(container) {
+    this.cleanupLiveKit();
+    window.store.setVoiceState({
+      isCallActive: false,
+      speakerState: 'idle',
+      statusMessage: 'LiveKit session ended.'
+    });
+    window.store.addTranscript('system', 'LiveKit voice session disconnected.');
+    this.render(container);
   }
 }
 
