@@ -145,6 +145,7 @@ class CriticalCallMemory:
     custom_notes: List[str] = field(default_factory=list)
     phone_normalizer: Any = field(default=None)
     phone_confirmed: bool = False
+    in_phone_capture: bool = False
 
     def __post_init__(self):
         if self.phone_normalizer is None:
@@ -180,32 +181,76 @@ class CriticalCallMemory:
             f"session_id={self.session_id} | count={len(self.phone_digits)} | masked={mask_phone_number(self.phone_digits)}"
         )
 
-    def extract_from_user_utterance(self, text: str) -> None:
+    def extract_from_user_utterance(self, text: str, source: str = "USER_SPEECH") -> None:
         """Deterministically extracts qualification and identity facts from user transcript."""
         if not text:
             return
+
+        # Invariant: ONLY genuine USER_SPEECH can mutate critical memory facts.
+        # System-generated content, internal instructions, operator prompts, tools, summaries NEVER extract phone digits.
+        if source != "USER_SPEECH" or source in ("INTERNAL_GREETING", "SYSTEM", "TOOL", "SUMMARY", "OPERATOR", "METADATA"):
+            logger.debug(f"[CRITICAL_MEMORY] Ignoring non-user-speech source='{source}'")
+            return
+
+        # Defensive guard: Do not parse internal greeting or script instructions as caller speech
+        internal_markers = [
+            "The phone call has just connected",
+            "The outbound call has connected",
+            "Deliver your opening greeting now",
+            "<call_script_directive>",
+            "<internal_instruction>",
+            "strictly following the call script",
+            "The user has just connected to the call",
+        ]
+        if any(marker in text for marker in internal_markers):
+            logger.debug("[CRITICAL_MEMORY] Ignoring internal greeting/script instruction")
+            return
+
         lower_text = text.lower().strip()
 
         # 1. Phone number digits & multi-turn processing via PhoneDigitNormalizer
-        if self.phone_normalizer is None:
-            self.phone_normalizer = PhoneDigitNormalizer(session_id=self.session_id)
-            
-        old_digits = self.phone_digits
-        self.phone_normalizer.process_utterance(text)
-        self.phone_digits = self.phone_normalizer.digits
-        
-        # If digits changed, reset confirmation
-        if old_digits != self.phone_digits:
-            self.phone_confirmed = False
+        # Phone capture is an EXPLICIT state.
+        # Only process phone digits if:
+        # a) in_phone_capture is already True (e.g. AI asked for phone number), OR
+        # b) user explicitly provided phone context (e.g. 'my number is', 'call me on', 'mera phone'), OR
+        # c) we already have 10 collected digits awaiting user confirmation/rejection.
+        # Check for explicit phone intent or a complete 10-digit mobile number
+        raw_digits = re.sub(r'\D', '', text)
+        is_complete_mobile = len(raw_digits) == 10 and raw_digits[0] in "6789"
+        has_phone_context = bool(
+            re.search(r'\b(phone|mobile|number|no\.|contact|whatsapp|reach\s+me|call\s+me)\b', lower_text)
+            or is_complete_mobile
+        )
+        can_process_phone = self.in_phone_capture or has_phone_context or (len(self.phone_digits) == 10 and not self.phone_confirmed)
 
-        # If we have 10 valid digits and user confirms or denies
-        if len(self.phone_digits) == 10:
-            if re.search(r'\b(yes|yeah|yep|correct|right|haan|han|ji|bilkul|exactly)\b', lower_text):
-                self.phone_confirmed = True
-                logger.info(f"[CRITICAL_MEMORY] Phone confirmed by user | session={self.session_id}")
-            elif re.search(r'\b(no|wrong|incorrect|nahi|na|wait|galat)\b', lower_text):
+        if can_process_phone:
+            if self.phone_normalizer is None:
+                self.phone_normalizer = PhoneDigitNormalizer(session_id=self.session_id)
+                
+            old_digits = self.phone_digits
+            self.phone_normalizer.process_utterance(text)
+            self.phone_digits = self.phone_normalizer.digits
+            
+            # If digits were extracted, ensure in_phone_capture is active
+            if len(self.phone_digits) > 0 and not self.phone_confirmed:
+                self.in_phone_capture = True
+
+            # If digits changed, reset confirmation
+            if old_digits != self.phone_digits:
                 self.phone_confirmed = False
-                logger.info(f"[CRITICAL_MEMORY] Phone rejected by user | session={self.session_id}")
+
+            # If we have 10 valid digits and user confirms or denies
+            if len(self.phone_digits) == 10:
+                is_affirmative = bool(re.search(r'(?:हाँ|हां|सही|जी|बिल्कुल|ठीक|\b(?:yes|yeah|yep|correct|right|haan|han|ji|bilkul|exactly|sahi)\b)', lower_text))
+                is_negative = bool(re.search(r'(?:नहीं|ना|गलत|\b(?:no|wrong|incorrect|nahi|na|wait|galat)\b)', lower_text))
+                if is_affirmative:
+                    self.phone_confirmed = True
+                    self.in_phone_capture = False
+                    logger.info(f"[CRITICAL_MEMORY] Phone confirmed by user | session={self.session_id}")
+                elif is_negative:
+                    self.phone_confirmed = False
+                    self.in_phone_capture = True
+                    logger.info(f"[CRITICAL_MEMORY] Phone rejected by user | session={self.session_id}")
 
         # 2. Confirmed Name detection
         name_match = re.search(r"(?:my name is|i am|i'm|this is|mera naam|call me)\s+([^,.\n!]+)", text, re.IGNORECASE)
@@ -299,8 +344,23 @@ class CriticalCallMemory:
         lower_text = text.lower()
         if "save_lead" in lower_text or "saved your details" in lower_text or "details have been saved" in lower_text:
             self.lead_saved = True
+            self.in_phone_capture = False
         if "end_call" in lower_text or "have a great day" in lower_text or "aapka din shubh ho" in lower_text:
             self.hangup_requested = True
+
+        # Explicit PHONE_CAPTURE state activation:
+        # Detect when the assistant prompts the caller for their phone/mobile number.
+        phone_prompt_patterns = [
+            r"\b(?:mobile|phone|contact|whatsapp)\s+number\b",
+            r"\b(?:digit-by-digit|10-digit|ten-digit)\b",
+            r"\b(?:apna|apka|apke)\s+(?:mobile|phone|number)\b",
+            r"\b(?:share|provide|tell\s+me|give)\s+(?:your|the)\s+(?:number|phone)\b",
+            r"\bnumber\s+(?:bataiye|bataye|batao|share)\b",
+        ]
+        if any(re.search(pat, lower_text) for pat in phone_prompt_patterns):
+            if not self.phone_confirmed and not self.lead_saved:
+                self.in_phone_capture = True
+                logger.info(f"[CRITICAL_MEMORY] Assistant prompted for phone -> in_phone_capture=True | session={self.session_id}")
 
     def render_memory_block(self) -> str:
         """Renders the concise critical memory block to be injected into system context."""
@@ -386,6 +446,8 @@ class SlidingWindowLLMContext(LLMContext):
             self.shared_state["phone_normalizer"] = self.critical_memory.phone_normalizer
             self.shared_state["phone_buffer"] = self.critical_memory.phone_normalizer._buffer
             self.shared_state["session_id"] = session_id
+            self.shared_state["in_phone_capture"] = self.critical_memory.in_phone_capture
+            self.shared_state["phone_confirmed"] = self.critical_memory.phone_confirmed
 
         # Extract initial system prompt
         if self._messages and self._messages[0].get("role") == "system":
@@ -412,6 +474,8 @@ class SlidingWindowLLMContext(LLMContext):
             base_ctx.shared_state["phone_normalizer"] = base_ctx.critical_memory.phone_normalizer
             base_ctx.shared_state["phone_buffer"] = base_ctx.critical_memory.phone_normalizer._buffer
             base_ctx.shared_state["session_id"] = session_id
+            base_ctx.shared_state["in_phone_capture"] = base_ctx.critical_memory.in_phone_capture
+            base_ctx.shared_state["phone_confirmed"] = base_ctx.critical_memory.phone_confirmed
 
         if base_ctx._messages and base_ctx._messages[0].get("role") == "system":
             base_ctx._raw_system_prompt = base_ctx._messages[0].get("content", "")
@@ -426,16 +490,20 @@ class SlidingWindowLLMContext(LLMContext):
         """Add a message to the context and deterministically update critical memory."""
         role = message.get("role", "")
         content = message.get("content", "")
+        source = message.get("source", "USER_SPEECH" if role == "user" else role.upper())
+        is_internal = message.get("is_internal_instruction", False)
 
         # Extract deterministic facts into critical memory
-        if role == "user" and isinstance(content, str):
-            self.critical_memory.extract_from_user_utterance(content)
+        if role == "user" and isinstance(content, str) and not is_internal:
+            self.critical_memory.extract_from_user_utterance(content, source=source)
             if self.shared_state is not None:
                 self.shared_state["phone_confirmed"] = self.critical_memory.phone_confirmed
+                self.shared_state["in_phone_capture"] = self.critical_memory.in_phone_capture
         elif role == "assistant" and isinstance(content, str):
             self.critical_memory.extract_from_assistant_utterance(content)
             if self.shared_state is not None:
                 self.shared_state["phone_confirmed"] = self.critical_memory.phone_confirmed
+                self.shared_state["in_phone_capture"] = self.critical_memory.in_phone_capture
         elif role == "system" and not self._raw_system_prompt:
             self._raw_system_prompt = content
 

@@ -59,20 +59,42 @@ class LanguageRoutingProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def _terminate_plivo_carrier_call(call_id: str, auth_id: str, auth_token: str):
-    """Hang up the Plivo PSTN call via Plivo REST API."""
+async def _terminate_plivo_carrier_call(call_id: str, auth_id: str, auth_token: str, session_id: str = "", dispatch_id: str = "", turn_id: int = 0):
+    """Hang up the Plivo PSTN call via Plivo REST API with structural non-PII logging."""
+    call_uuid_present = bool(call_id)
     if not call_id or not auth_id or not auth_token:
-        logger.debug(f"[EOC] Missing credentials for Plivo REST hangup: call_id={call_id}")
+        logger.warning(
+            f"[EOC] Missing credentials for Plivo REST hangup | session_id={session_id} | dispatch_id={dispatch_id} | "
+            f"turn_id={turn_id} | call_uuid_present={call_uuid_present}"
+        )
         return
     endpoint = f"https://api.plivo.com/v1/Account/{auth_id}/Call/{call_id}/"
+    logger.info(
+        f"[EOC] Invoking Plivo carrier hangup REST API | session_id={session_id} | dispatch_id={dispatch_id} | "
+        f"turn_id={turn_id} | call_uuid_present={call_uuid_present}"
+    )
     try:
         import aiohttp
         auth = aiohttp.BasicAuth(auth_id, auth_token)
         async with aiohttp.ClientSession() as session:
             async with session.delete(endpoint, auth=auth) as resp:
-                logger.info(f"[EOC] Plivo REST API call delete returned HTTP {resp.status} for call_id={call_id}")
+                status = resp.status
+                if status in (200, 204):
+                    logger.info(
+                        f"[EOC] Plivo REST API call delete success (HTTP {status}) | session_id={session_id} | "
+                        f"dispatch_id={dispatch_id} | turn_id={turn_id} | call_uuid_present={call_uuid_present}"
+                    )
+                else:
+                    err_body = await resp.text()
+                    logger.error(
+                        f"[EOC] Plivo REST API call delete failed (HTTP {status}): {err_body} | "
+                        f"session_id={session_id} | dispatch_id={dispatch_id} | turn_id={turn_id} | call_uuid_present={call_uuid_present}"
+                    )
     except Exception as e:
-        logger.error(f"[EOC] Failed to terminate Plivo carrier call via REST API: {e}")
+        logger.error(
+            f"[EOC] Failed to terminate Plivo carrier call via REST API: {e} | session_id={session_id} | "
+            f"dispatch_id={dispatch_id} | turn_id={turn_id} | call_uuid_present={call_uuid_present}"
+        )
 
 
 class CallTerminationProcessor(FrameProcessor):
@@ -97,19 +119,33 @@ class CallTerminationProcessor(FrameProcessor):
             return
         self._hangup_executed = True
         self.shared_state["termination_started"] = True
-        logger.warning(f"[EOC] CALL_CLOSING_COMPLETED ({reason}) | Executing automatic call termination.")
+        
+        session_id = self.shared_state.get("session_id", "unknown")
+        dispatch_id = self.shared_state.get("dispatch_id", "unknown")
+        turn_id = self.shared_state.get("current_turn_id", 0)
+        call_id = self.shared_state.get("call_id") or os.getenv("PLIVO_CALL_ID")
+        call_uuid_present = bool(call_id)
+        auth_id = self.shared_state.get("auth_id") or os.getenv("PLIVO_AUTH_ID")
+        auth_token = self.shared_state.get("auth_token") or os.getenv("PLIVO_AUTH_TOKEN")
+
+        logger.warning(
+            f"[EOC] CALL_CLOSING_COMPLETED | termination_reason={reason} | session_id={session_id} | "
+            f"dispatch_id={dispatch_id} | turn_id={turn_id} | call_uuid_present={call_uuid_present} | "
+            f"termination_started=True"
+        )
 
         # Cancel watchdog timer if running
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
 
-        call_id = self.shared_state.get("call_id") or os.getenv("PLIVO_CALL_ID")
-        auth_id = self.shared_state.get("auth_id") or os.getenv("PLIVO_AUTH_ID")
-        auth_token = self.shared_state.get("auth_token") or os.getenv("PLIVO_AUTH_TOKEN")
-
         # 1. Terminate Plivo carrier phone call via REST API
         if call_id and auth_id and auth_token:
-            asyncio.create_task(_terminate_plivo_carrier_call(call_id, auth_id, auth_token))
+            asyncio.create_task(
+                _terminate_plivo_carrier_call(
+                    call_id, auth_id, auth_token,
+                    session_id=session_id, dispatch_id=dispatch_id, turn_id=turn_id
+                )
+            )
 
         # 2. Allow short 400ms buffer for audio playback to complete on handset
         await asyncio.sleep(0.4)
@@ -120,7 +156,10 @@ class CallTerminationProcessor(FrameProcessor):
             try:
                 from fastapi.websockets import WebSocketState
                 if ws.client_state != WebSocketState.DISCONNECTED:
-                    logger.info("[EOC] Gracefully closing WebSocket connection.")
+                    logger.info(
+                        f"[EOC] Gracefully closing WebSocket connection | session_id={session_id} | "
+                        f"dispatch_id={dispatch_id} | call_uuid_present={call_uuid_present}"
+                    )
                     await ws.close()
             except Exception as ws_err:
                 logger.debug(f"[EOC] WebSocket close notice: {ws_err}")
@@ -135,6 +174,7 @@ class CallTerminationProcessor(FrameProcessor):
                 logger.debug(f"[EOC] Task queue notice: {task_err}")
 
         self.shared_state["hangup_requested"] = False
+        self.shared_state["termination_requested"] = False
         self.shared_state["ending_call"] = False
 
     async def _start_watchdog(self, timeout_sec: float = 4.5):
