@@ -27,10 +27,14 @@ class LeadsView {
             Verified B2B company intelligence repository. Select any prospect to inspect data or initiate an AI qualification call.
           </div>
         </div>
-        <div style="display: flex; gap: 10px;">
-          <a href="#discover" class="btn btn-primary btn-sm" style="text-decoration: none;">
-            <i class="fa-solid fa-plus"></i>
-            <span>Discover More Leads</span>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <button class="btn btn-primary btn-sm" id="btnOpenCreateLeadModal" style="background: #16a34a; border-color: #15803d; font-weight: 700; display: flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(22, 163, 74, 0.3);">
+            <i class="fa-solid fa-user-plus"></i>
+            <span>+ Add Verified Lead</span>
+          </button>
+          <a href="#discover" class="btn btn-secondary btn-sm" style="text-decoration: none;">
+            <i class="fa-solid fa-compass"></i>
+            <span>Discover Pipeline</span>
           </a>
         </div>
       </div>
@@ -103,7 +107,12 @@ class LeadsView {
             <div class="text-muted" style="font-size: 13px; margin: 4px 0 16px 0;">
               No leads match your active filters or search criteria.
             </div>
-            <button class="btn btn-secondary btn-sm" id="btnClearFilters">Clear Filters</button>
+            <div style="display: flex; gap: 10px; justify-content: center; align-items: center;">
+              <button class="btn btn-primary btn-sm" id="btnEmptyAddLead" data-action="create-lead" style="background: #16a34a; border-color: #15803d; font-weight: 700;">
+                <i class="fa-solid fa-user-plus"></i> Add Verified Lead Now
+              </button>
+              <button class="btn btn-secondary btn-sm" id="btnClearFilters">Clear Filters</button>
+            </div>
           </div>
         ` : `
           <div style="overflow-x: auto;">

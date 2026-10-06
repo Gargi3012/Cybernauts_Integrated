@@ -91,6 +91,13 @@ const api = {
     return fetchJSON("/api/leads/all");
   },
 
+  async createLead(leadData) {
+    return fetchJSON("/api/leads", {
+      method: "POST",
+      body: leadData
+    });
+  },
+
   async getCategories() {
     return fetchJSON("/api/categories");
   },

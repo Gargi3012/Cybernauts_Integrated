@@ -176,7 +176,11 @@ class OverviewView {
           <div class="card" style="padding: 20px;">
             <h3 style="margin: 0 0 14px 0; font-size: 15px; font-weight: 700; color: var(--text-primary);">Quick Actions</h3>
             <div style="display: flex; flex-direction: column; gap: 10px;">
-              <a href="#discover" class="btn btn-primary" style="justify-content: flex-start; text-decoration: none;">
+              <button class="btn btn-primary" id="btnOverviewAddLead" data-action="create-lead" style="justify-content: flex-start; background: #16a34a; border-color: #15803d; font-weight: 700;">
+                <i class="fa-solid fa-user-plus"></i>
+                <span>+ Add Verified Lead (CRM)</span>
+              </button>
+              <a href="#discover" class="btn btn-secondary" style="justify-content: flex-start; text-decoration: none;">
                 <i class="fa-solid fa-wand-magic-sparkles"></i>
                 <span>Discover New Leads</span>
               </a>

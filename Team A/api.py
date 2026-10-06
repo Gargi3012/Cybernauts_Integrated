@@ -5,16 +5,18 @@ Provides live multi-stage status tracking and SQLite leads.db querying.
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
 import time
 import uuid
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 # Ensure project root & pillar1 subfolder are on sys.path
 ROOT = os.path.abspath(os.path.dirname(__file__))
@@ -31,7 +33,8 @@ DB_PATH = os.path.join(ROOT, "leads.db")
 
 
 from database.connection import setup_database
-from database.repository import LeadRepository
+from database.repository import LeadRepository, normalize_industry
+from models.lead_record import PersonRecord, normalize_domain
 
 def init_db() -> None:
     """
@@ -356,6 +359,122 @@ def get_status():
         if state_copy["status"] == "running" and state_copy["start_time"]:
             state_copy["elapsed_sec"] = round(time.time() - state_copy["start_time"], 1)
         return state_copy
+
+
+class CreateLeadRequest(BaseModel):
+    company_name: str = Field(..., min_length=1, description="Company or business name")
+    website: Optional[str] = Field(None, description="Company website URL")
+    domain: Optional[str] = Field(None, description="Primary domain token")
+    industry: Optional[str] = Field("B2B Services", description="Industry or sector")
+    location: Optional[str] = Field(None, description="City, State, or Region")
+    country: Optional[str] = Field("India", description="Country")
+    description: Optional[str] = Field(None, description="Company summary or overview")
+    employees: Optional[str] = Field(None, description="Company size or employee range")
+    founded: Optional[str] = Field(None, description="Year founded")
+    phones: List[str] = Field(default_factory=list, description="Callable phone numbers")
+    emails: List[str] = Field(default_factory=list, description="Contact email addresses")
+    contact_name: Optional[str] = Field(None, description="Primary contact / decision maker name")
+    contact_role: Optional[str] = Field(None, description="Job title or role")
+    contact_email: Optional[str] = Field(None, description="Contact email")
+    contact_phone: Optional[str] = Field(None, description="Contact direct phone")
+    contact_linkedin: Optional[str] = Field(None, description="Contact LinkedIn URL")
+    lead_quality: Optional[str] = Field("Verified", description="Lead quality tier (Verified, High, Medium)")
+    lead_score: Optional[int] = Field(90, ge=0, le=100, description="Lead qualification score")
+    notes: Optional[str] = Field(None, description="Internal CRM notes")
+    keyword: Optional[str] = Field("crm_manual", description="Discovery tag")
+    tech_stack: List[str] = Field(default_factory=list, description="Technologies used")
+
+
+@app.post("/api/leads", summary="Add / Create Verified Lead (CRM)")
+@app.post("/api/leads/create", summary="Add / Create Verified Lead Alias (CRM)")
+def create_lead(req: CreateLeadRequest):
+    """
+    CRM Lead Creation:
+    Accepts verified lead information from the CRM frontend or external API,
+    normalizes domain and contact details, and persists into canonical flowiz_leads.
+    """
+    clean_company = req.company_name.strip()
+    if not clean_company:
+        raise HTTPException(status_code=400, detail="Company name is required.")
+
+    # Determine domain
+    resolved_domain = normalize_domain(req.domain or req.website)
+    if not resolved_domain:
+        slug = re.sub(r"[^a-z0-9]", "", clean_company.lower())
+        resolved_domain = f"{slug or 'lead'}.local"
+
+    website = req.website.strip() if req.website else f"https://{resolved_domain}"
+
+    # Normalize phone numbers
+    phones: List[str] = []
+    if req.contact_phone and req.contact_phone.strip():
+        phones.append(req.contact_phone.strip())
+    for p in req.phones:
+        if p and p.strip() and p.strip() not in phones:
+            phones.append(p.strip())
+
+    # Normalize emails
+    emails: List[str] = []
+    if req.contact_email and req.contact_email.strip():
+        emails.append(req.contact_email.strip())
+    for e in req.emails:
+        if e and e.strip() and e.strip() not in emails:
+            emails.append(e.strip())
+
+    # Build people list
+    people: List[PersonRecord] = []
+    if req.contact_name and req.contact_name.strip():
+        person = PersonRecord(
+            name=req.contact_name.strip(),
+            designation=req.contact_role.strip() if req.contact_role else "Decision Maker",
+            email=req.contact_email.strip() if req.contact_email else None,
+            phone=req.contact_phone.strip() if req.contact_phone else None,
+            linkedin=req.contact_linkedin.strip() if req.contact_linkedin else None,
+            decision_maker_score=90.0,
+        )
+        people.append(person)
+
+    lead_data = {
+        "company_name": clean_company,
+        "domain": resolved_domain,
+        "website": website,
+        "industry": normalize_industry(req.industry) or "B2B Services",
+        "location": req.location.strip() if req.location else "India",
+        "country": req.country.strip() if req.country else "India",
+        "description": req.description.strip() if req.description else f"{clean_company} - Verified CRM prospect",
+        "employees": req.employees.strip() if req.employees else "10-50",
+        "founded": req.founded.strip() if req.founded else None,
+        "phones": phones,
+        "emails": emails,
+        "people": [p.model_dump() for p in people],
+        "lead_quality": req.lead_quality or "Verified",
+        "lead_score": req.lead_score if req.lead_score is not None else 90,
+        "confidence_score": 1.0,
+        "confidence": 1.0,
+        "verification_status": "Verified",
+        "verified_phones": phones,
+        "verified_emails": emails,
+        "keyword": req.keyword or "crm_manual",
+        "source": "CRM Manual Entry",
+        "tech_stack": req.tech_stack or [],
+        "domain_intel": {
+            "crm_verified": True,
+            "crm_notes": req.notes or "",
+            "created_via": "CRM Frontend",
+        },
+        "call_status": "uncalled",
+        "qualification_status": "pending",
+        "qualification_score": 0,
+    }
+
+    repo = LeadRepository(DB_PATH)
+    lead_record = repo.upsert_lead(lead_data)
+
+    return {
+        "status": "success",
+        "message": f"Lead '{clean_company}' successfully created and verified in CRM.",
+        "lead": lead_record.to_dict(),
+    }
 
 
 @app.get("/api/leads/all", summary="Bulk Fetch All Leads")

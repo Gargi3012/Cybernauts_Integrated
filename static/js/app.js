@@ -16,6 +16,7 @@ class CybernautsApp {
       settings: new SettingsView()
     };
     this.leadDetailView = new LeadDetailView();
+    this.leadCreateModal = new LeadCreateModal();
   }
 
   init() {
@@ -74,6 +75,17 @@ class CybernautsApp {
         }
       });
     }
+
+    // Global listener for CRM "Add Verified Lead" actions across views
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action="create-lead"], #btnOpenCreateLeadModal, #btnOverviewAddLead');
+      if (btn) {
+        e.preventDefault();
+        if (this.leadCreateModal) {
+          this.leadCreateModal.show();
+        }
+      }
+    });
   }
 
   setupStateSubscriptions() {

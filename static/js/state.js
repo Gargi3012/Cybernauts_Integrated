@@ -87,6 +87,29 @@ class CybernautsState {
     this.notify('leadsUpdated', this.allLeads);
   }
 
+  addLead(lead) {
+    if (!lead) return;
+    const domain = lead.domain || lead.website;
+    const existingIndex = this.allLeads.findIndex(l => 
+      (domain && (l.domain === domain || l.website === domain)) || 
+      (lead.id && l.id === lead.id)
+    );
+
+    if (existingIndex !== -1) {
+      this.allLeads[existingIndex] = { ...this.allLeads[existingIndex], ...lead };
+    } else {
+      this.allLeads.unshift(lead);
+    }
+
+    const cat = lead.industry || 'B2B Services';
+    if (cat) {
+      this.categories[cat] = (this.categories[cat] || 0) + 1;
+    }
+
+    this.notify('leadsUpdated', this.allLeads);
+    this.notify('categoriesUpdated', this.categories);
+  }
+
   setCategories(cats) {
     this.categories = cats || {};
     this.notify('categoriesUpdated', this.categories);
