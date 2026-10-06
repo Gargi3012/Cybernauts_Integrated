@@ -142,26 +142,64 @@
   <!-- Modal / Drawer Container -->
   <div id="modalContainer"></div>
 
-  <!-- Auth Overlay Modal -->
+  <!-- Auth Overlay Modal (Sign In & Sign Up) -->
   <div id="auth-overlay" class="auth-overlay hidden">
-    <div class="auth-card">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <div class="auth-card" style="max-width: 420px; width: 100%;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <img src="/static/Flowiz.png" alt="Flowiz" style="height:32px; width:32px; border-radius:50%; box-shadow:0 2px 6px rgba(236,72,153,0.25);" />
-          <h3 style="margin:0;">Admin Authentication</h3>
+          <h3 style="margin:0; font-size: 18px; font-weight: 800;" id="auth-modal-title">Admin Authentication</h3>
         </div>
-        <button id="btn-close-auth" class="btn btn-secondary btn-sm" style="padding:2px 8px;">✕</button>
+        <button id="btn-close-auth" class="btn btn-secondary btn-sm" style="padding:2px 8px;" title="Close">✕</button>
       </div>
-      <p class="auth-subtitle">Sign in to unlock Flowiz AI Voice controls</p>
-      <div class="auth-input-group">
-        <label for="auth-username" style="font-size:12px; font-weight:600; color:var(--text-secondary);">Username</label>
-        <input type="text" id="auth-username" class="form-input" placeholder="Enter username" value="admin" style="margin-top:4px;" />
+
+      <!-- Segmented Mode Switcher (Sign In vs Sign Up) -->
+      <div class="segmented-control" style="width: 100%; display: flex; margin-bottom: 16px;">
+        <button type="button" class="segmented-tab active" id="tabAuthLogin" style="flex: 1; text-align: center; justify-content: center; display: flex; align-items: center; gap: 6px;">
+          <i class="fa-solid fa-right-to-bracket"></i>
+          <span>Sign In</span>
+        </button>
+        <button type="button" class="segmented-tab" id="tabAuthSignup" style="flex: 1; text-align: center; justify-content: center; display: flex; align-items: center; gap: 6px;">
+          <i class="fa-solid fa-user-plus"></i>
+          <span>Sign Up</span>
+        </button>
       </div>
-      <div class="auth-input-group" style="margin-top:12px;">
-        <label for="auth-password" style="font-size:12px; font-weight:600; color:var(--text-secondary);">Password</label>
-        <input type="password" id="auth-password" class="form-input" placeholder="Enter password" style="margin-top:4px;" />
+
+      <p class="auth-subtitle" id="auth-modal-subtitle" style="margin-bottom: 14px;">Sign in to unlock Flowiz AI Voice & Telephony controls</p>
+
+      <form id="auth-form" onsubmit="return false;" autocomplete="off">
+        <div class="auth-input-group">
+          <label for="auth-username" style="font-size:12px; font-weight:600; color:var(--text-secondary);">Username</label>
+          <input type="text" id="auth-username" class="form-input" placeholder="Enter username (min 3 chars)" value="admin" style="margin-top:4px;" required />
+        </div>
+
+        <div class="auth-input-group" style="margin-top:12px;">
+          <label for="auth-password" style="font-size:12px; font-weight:600; color:var(--text-secondary);">Password</label>
+          <input type="password" id="auth-password" class="form-input" placeholder="Enter password (min 6 chars)" style="margin-top:4px;" required />
+        </div>
+
+        <!-- Confirm Password (Shown in Sign Up mode) -->
+        <div class="auth-input-group" id="auth-confirm-group" style="margin-top:12px; display: none;">
+          <label for="auth-confirm-password" style="font-size:12px; font-weight:600; color:var(--text-secondary);">Confirm Password</label>
+          <input type="password" id="auth-confirm-password" class="form-input" placeholder="Re-enter password to confirm" style="margin-top:4px;" />
+        </div>
+
+        <!-- Inline Status / Error Message Box -->
+        <div id="auth-status-notice" style="display: none; margin-top: 14px; padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.4;"></div>
+
+        <button type="submit" id="btn-login-submit" class="btn btn-primary" style="margin-top:18px; width:100%; padding: 10px; font-weight: 700; font-size: 13.5px; display: flex; align-items: center; justify-content: center; gap: 8px;">
+          <i class="fa-solid fa-right-to-bracket" id="auth-submit-icon"></i>
+          <span id="auth-submit-text">Sign In</span>
+        </button>
+      </form>
+
+      <!-- Bottom toggle link -->
+      <div style="margin-top: 16px; text-align: center; font-size: 12.5px; color: var(--text-muted);">
+        <span id="auth-toggle-prompt">Don't have an account?</span>
+        <button type="button" id="btn-auth-toggle-mode" style="background: none; border: none; color: #6b21a8; font-weight: 700; cursor: pointer; text-decoration: underline; margin-left: 4px; padding: 0;">
+          Sign Up now
+        </button>
       </div>
-      <button id="btn-login-submit" class="btn btn-primary" style="margin-top:20px; width:100%;">Sign In</button>
     </div>
   </div>
 
