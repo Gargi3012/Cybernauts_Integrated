@@ -16,7 +16,26 @@ class LiveAgentView {
     this.isWsConnected = false;
     this.callTimer = null;
     this.callElapsedSec = 0;
+
+    // Call Recording State (Telephony & LiveKit WebRTC)
+    this.isTelephonyRecordEnabled = false;
+    this.isLiveKitRecording = false;
+    this.mediaRecorder = null;
+    this.recordingAudioCtx = null;
+    this.mixedAudioDestination = null;
+    this.audioChunks = [];
+    this.recTimer = null;
+    this.recElapsedSec = 0;
+    this.livekitSessionId = null;
+    this.recordAutoLiveKit = true;
+
     this.initWebSocket();
+  }
+
+  formatDuration(seconds) {
+    const mins = String(Math.floor((seconds || 0) / 60)).padStart(2, '0');
+    const secs = String((seconds || 0) % 60).padStart(2, '0');
+    return `${mins}:${secs}`;
   }
 
   initWebSocket() {
@@ -239,7 +258,8 @@ class LiveAgentView {
         call_prompt: callPrompt || undefined,
         has_call_prompt: Boolean(callPrompt),
         call_prompt_len: callPrompt ? callPrompt.length : 0,
-        call_status: 'initiating'
+        call_status: 'initiating',
+        is_recorded: Boolean(this.isTelephonyRecordEnabled)
       });
 
       this.startCallTimer();
@@ -261,7 +281,8 @@ class LiveAgentView {
         lead_id: resolvedLeadId,
         session_id: sessionId,
         dispatch_id: dispatchId,
-        call_prompt: callPrompt || undefined
+        call_prompt: callPrompt || undefined,
+        record_call: Boolean(this.isTelephonyRecordEnabled)
       };
 
       const res = await window.api.triggerOutboundCall(phone, payload);
@@ -347,6 +368,11 @@ class LiveAgentView {
               <span class="badge ${activeCall.call_status === 'completed' ? 'badge-success' : (['failed', 'busy', 'no-answer'].includes(activeCall.call_status) ? 'badge-danger' : 'badge-warning')}" style="font-size: 12px; padding: 6px 12px;">
                 ${activeCall.call_status === 'completed' ? '✓ Call Completed' : (activeCall.call_status === 'failed' ? '✕ Call Failed' : (activeCall.call_status === 'busy' ? '☎ Line Busy' : (activeCall.call_status === 'no-answer' ? '⊘ No Answer' : '● ' + (activeCall.call_status || 'In Progress'))))}
               </span>
+              ${activeCall.is_recorded ? `
+                <span class="badge" style="background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; font-size: 11px; padding: 5px 10px; display: inline-flex; align-items: center; gap: 5px;">
+                  <i class="fa-solid fa-circle-dot fa-fade"></i> Recording (Carrier MP3)
+                </span>
+              ` : ''}
               ${['completed', 'failed', 'busy', 'no-answer'].includes(activeCall.call_status) ? `
                 <button class="btn btn-sm" id="btnCallAgainTelephony" style="background: #16a34a; border: 1px solid #15803d; color: #ffffff; padding: 6px 14px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(22, 163, 74, 0.3);" title="Call ${activeCall.phone} again immediately with the same script">
                   <i class="fa-solid fa-rotate-right"></i>
@@ -517,8 +543,16 @@ class LiveAgentView {
 
           <!-- Launch Button Bar -->
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-            <div style="font-size: 12px; color: var(--text-muted);">
-              Or launch directly with pre-filled context from <a href="#leads" style="color: var(--color-primary); font-weight: 700;">All Leads</a>.
+            <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+              <div style="font-size: 12px; color: var(--text-muted);">
+                Or launch directly from <a href="#leads" style="color: var(--color-primary); font-weight: 700;">All Leads</a>.
+              </div>
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; background: #fff5f5; border: 1px solid #fecaca; padding: 6px 12px; border-radius: 6px;" title="Enable carrier-grade MP3 recording saved to Call Recordings">
+                <input type="checkbox" id="chkRecordTelephony" ${this.isTelephonyRecordEnabled ? 'checked' : ''} style="width: 15px; height: 15px; accent-color: #dc2626; cursor: pointer;" />
+                <span style="font-size: 12.5px; font-weight: 700; color: #b91c1c; display: flex; align-items: center; gap: 6px;">
+                  <i class="fa-solid fa-circle-dot"></i> Record Call (Carrier MP3)
+                </span>
+              </label>
             </div>
             <div>
               <button class="btn btn-primary" id="btnManualDial" style="background: #6b21a8; border-color: #581c87; padding: 10px 22px; font-weight: 700; font-size: 13.5px;">
@@ -552,13 +586,21 @@ class LiveAgentView {
                 </div>
               </div>
             </div>
-            <div style="display: flex; gap: 10px; align-items: center;">
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
               ${this.isLiveKitConnected ? `
-                <button class="btn" id="btnDisconnectLiveKit" style="background: #dc2626; border: 1px solid #b91c1c; color: #fff; padding: 9px 18px; font-weight: 700; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Hang up and stop microphone">
+                <button class="btn" id="btnToggleRecordLiveKit" style="background: ${this.isLiveKitRecording ? '#dc2626' : '#ffffff'}; border: 1px solid ${this.isLiveKitRecording ? '#b91c1c' : '#f87171'}; color: ${this.isLiveKitRecording ? '#ffffff' : '#dc2626'}; padding: 9px 16px; font-weight: 700; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(220, 38, 38, 0.15);" title="Toggle Live Call Recording">
+                  <i class="fa-solid fa-circle-dot ${this.isLiveKitRecording ? 'fa-beat-fade' : ''}"></i>
+                  <span id="recLiveKitBtnLabel">${this.isLiveKitRecording ? `Recording (${this.formatDuration(this.recElapsedSec)})` : 'Record Call'}</span>
+                </button>
+                <button class="btn" id="btnDisconnectLiveKit" style="background: #475569; border: 1px solid #334155; color: #fff; padding: 9px 18px; font-weight: 700; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Hang up and stop microphone">
                   <i class="fa-solid fa-phone-slash"></i>
                   <span>Hang Up / Disconnect</span>
                 </button>
               ` : `
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; user-select: none; margin-right: 4px;">
+                  <input type="checkbox" id="chkAutoRecordLiveKit" ${this.recordAutoLiveKit ? 'checked' : ''} style="width: 15px; height: 15px; accent-color: #dc2626; cursor: pointer;" />
+                  <span style="font-weight: 600; color: var(--text-primary);"><i class="fa-solid fa-circle-dot" style="color: #dc2626; margin-right: 2px;"></i> Auto-record session</span>
+                </label>
                 <button class="btn btn-primary" id="btnConnectLiveKit" ${this.isLiveKitConnecting ? 'disabled' : ''} style="background: #6b21a8; border-color: #581c87; padding: 9px 20px; font-weight: 700; border-radius: 6px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
                   <i class="fa-solid ${this.isLiveKitConnecting ? 'fa-circle-notch fa-spin' : 'fa-microphone'}"></i>
                   <span>${this.isLiveKitConnecting ? 'Connecting...' : 'Connect Live Microphone'}</span>
@@ -852,6 +894,37 @@ class LiveAgentView {
       });
     }
 
+    // Telephony Recording checkbox
+    const chkTelephonyRec = container.querySelector('#chkRecordTelephony');
+    if (chkTelephonyRec) {
+      chkTelephonyRec.addEventListener('change', (e) => {
+        this.isTelephonyRecordEnabled = e.target.checked;
+      });
+    }
+
+    // LiveKit Auto-record checkbox
+    const chkAutoRec = container.querySelector('#chkAutoRecordLiveKit');
+    if (chkAutoRec) {
+      chkAutoRec.addEventListener('change', (e) => {
+        this.recordAutoLiveKit = e.target.checked;
+      });
+    }
+
+    // LiveKit in-call record toggle button
+    const btnToggleRec = container.querySelector('#btnToggleRecordLiveKit');
+    if (btnToggleRec) {
+      btnToggleRec.addEventListener('click', async () => {
+        if (this.isLiveKitRecording) {
+          btnToggleRec.disabled = true;
+          btnToggleRec.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Saving...</span>';
+          await this.stopLiveKitRecordingAndUpload();
+        } else {
+          this.startLiveKitRecording();
+        }
+        this.render(container);
+      });
+    }
+
     // LiveKit WebRTC Connect & Disconnect handlers
     const btnConnectLiveKit = container.querySelector('#btnConnectLiveKit');
     if (btnConnectLiveKit) {
@@ -866,6 +939,136 @@ class LiveAgentView {
         this.disconnectLiveKit(container);
       });
     }
+  }
+
+  startLiveKitRecording() {
+    if (this.isLiveKitRecording) return;
+    try {
+      this.audioChunks = [];
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      this.recordingAudioCtx = new AudioCtx();
+      this.mixedAudioDestination = this.recordingAudioCtx.createMediaStreamDestination();
+
+      // 1. Connect Local User Mic Track
+      if (this.livekitRoom && this.livekitRoom.localParticipant) {
+        this.livekitRoom.localParticipant.tracks.forEach(pub => {
+          if (pub.track && pub.track.kind === 'audio' && pub.track.mediaStreamTrack) {
+            try {
+              const micSrc = this.recordingAudioCtx.createMediaStreamSource(new MediaStream([pub.track.mediaStreamTrack]));
+              micSrc.connect(this.mixedAudioDestination);
+            } catch (err) {
+              console.warn('[LiveKit Rec] Could not pipe local mic:', err);
+            }
+          }
+        });
+      }
+
+      // 2. Connect Remote Agent Bot Tracks
+      if (this.livekitRoom) {
+        this.livekitRoom.remoteParticipants.forEach(participant => {
+          participant.tracks.forEach(pub => {
+            if (pub.track && pub.track.kind === 'audio' && pub.track.mediaStreamTrack) {
+              try {
+                const botSrc = this.recordingAudioCtx.createMediaStreamSource(new MediaStream([pub.track.mediaStreamTrack]));
+                botSrc.connect(this.mixedAudioDestination);
+              } catch (err) {
+                console.warn('[LiveKit Rec] Could not pipe remote bot track:', err);
+              }
+            }
+          });
+        });
+      }
+
+      // 3. Initialize MediaRecorder
+      let mimeType = 'audio/webm;codecs=opus';
+      if (!window.MediaRecorder || !MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm')) ? 'audio/webm' : '';
+      }
+      const options = mimeType ? { mimeType } : {};
+      this.mediaRecorder = new MediaRecorder(this.mixedAudioDestination.stream, options);
+
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          this.audioChunks.push(e.data);
+        }
+      };
+
+      this.mediaRecorder.start(1000);
+      this.isLiveKitRecording = true;
+      this.recElapsedSec = 0;
+      if (this.recTimer) clearInterval(this.recTimer);
+      this.recTimer = setInterval(() => {
+        this.recElapsedSec++;
+        const btnLabel = document.getElementById('recLiveKitBtnLabel');
+        if (btnLabel) {
+          btnLabel.textContent = `Recording (${this.formatDuration(this.recElapsedSec)})`;
+        }
+      }, 1000);
+
+      window.store.addTranscript('system', '🔴 In-call audio recording started.');
+      console.log('[LiveKit Rec] Dual-track recording active.');
+    } catch (err) {
+      console.error('[LiveKit Rec] Failed to start recorder:', err);
+    }
+  }
+
+  async stopLiveKitRecordingAndUpload() {
+    if (!this.isLiveKitRecording || !this.mediaRecorder) return;
+    return new Promise((resolve) => {
+      if (this.recTimer) {
+        clearInterval(this.recTimer);
+        this.recTimer = null;
+      }
+      const durationSec = this.recElapsedSec;
+      const sessionId = this.livekitSessionId || ('sess_lk_' + Date.now());
+
+      this.mediaRecorder.onstop = async () => {
+        try {
+          const mimeType = this.mediaRecorder?.mimeType || 'audio/webm';
+          const blob = new Blob(this.audioChunks, { type: mimeType });
+          if (blob.size > 1000) {
+            const formData = new FormData();
+            formData.append('audio_file', blob, `livekit_${sessionId}.webm`);
+            formData.append('session_id', sessionId);
+            formData.append('channel', 'livekit');
+            formData.append('lead_name', 'LiveKit Web Session');
+            formData.append('phone_number', 'Browser Client');
+            formData.append('duration_seconds', durationSec);
+
+            await window.api.uploadRecording(formData);
+            window.store.addTranscript('system', `✓ Recording saved (${this.formatDuration(durationSec)}) to Call Recordings tab.`);
+            
+            // Sync recording badge
+            if (window.app && window.app.updateRecordingCount) {
+              window.app.updateRecordingCount();
+            }
+          }
+        } catch (uploadErr) {
+          console.error('[LiveKit Rec Upload Error]', uploadErr);
+        } finally {
+          this.audioChunks = [];
+          this.isLiveKitRecording = false;
+          if (this.recordingAudioCtx && this.recordingAudioCtx.state !== 'closed') {
+            try { this.recordingAudioCtx.close(); } catch (_) {}
+          }
+          this.recordingAudioCtx = null;
+          this.mixedAudioDestination = null;
+          this.mediaRecorder = null;
+          resolve();
+        }
+      };
+
+      try {
+        if (this.mediaRecorder.state !== 'inactive') {
+          this.mediaRecorder.stop();
+        } else {
+          resolve();
+        }
+      } catch (err) {
+        console.warn('Error stopping mediaRecorder:', err);
+        resolve();
+      }
+    });
   }
 
   async connectLiveKit(container) {
@@ -896,6 +1099,7 @@ class LiveAgentView {
         }
       });
       this.livekitRoom = room;
+      this.livekitSessionId = 'sess_lk_' + Date.now();
 
       // CRITICAL: When remote bot publishes audio, attach it to DOM and play so user hears the AI speak!
       room.on(window.LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
@@ -908,6 +1112,16 @@ class LiveAgentView {
           audioElement.play().catch(e => {
             console.warn('[LiveKit] Autoplay warning on track:', e);
           });
+
+          // If recording is running, attach newly subscribed remote audio to mixer
+          if (this.isLiveKitRecording && this.recordingAudioCtx && this.mixedAudioDestination && track.mediaStreamTrack) {
+            try {
+              const botSrc = this.recordingAudioCtx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]));
+              botSrc.connect(this.mixedAudioDestination);
+            } catch (pipeErr) {
+              console.warn('[LiveKit Rec] Could not pipe subscribed track to mixer:', pipeErr);
+            }
+          }
         }
       });
 
@@ -941,6 +1155,12 @@ class LiveAgentView {
       });
 
       window.store.addTranscript('system', 'LiveKit WebRTC audio session connected. Sara AI is listening.');
+
+      // Auto-start recording if enabled
+      if (this.recordAutoLiveKit) {
+        setTimeout(() => this.startLiveKitRecording(), 500);
+      }
+
       this.render(container);
 
     } catch (err) {
@@ -955,7 +1175,6 @@ class LiveAgentView {
   cleanupLiveKit() {
     if (this.livekitRoom) {
       try {
-        // Explicitly stop all local tracks so browser microphone icon / camera hardware is released immediately!
         if (this.livekitRoom.localParticipant) {
           this.livekitRoom.localParticipant.tracks.forEach(pub => {
             if (pub.track) {
@@ -975,7 +1194,10 @@ class LiveAgentView {
     this.isLiveKitConnecting = false;
   }
 
-  disconnectLiveKit(container) {
+  async disconnectLiveKit(container) {
+    if (this.isLiveKitRecording) {
+      await this.stopLiveKitRecordingAndUpload();
+    }
     this.cleanupLiveKit();
     window.store.setVoiceState({
       isCallActive: false,

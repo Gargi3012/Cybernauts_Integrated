@@ -58,3 +58,5 @@ artifacts/
 server_logs.*.txt
 tests_verification_openai.py
 output/
+static/recordings/*
+!static/recordings/.gitkeep

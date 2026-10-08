@@ -21,6 +21,7 @@ def place_outbound_call(
     lead_id: Optional[str] = None,
     session_id: Optional[str] = None,
     dispatch_id: Optional[str] = None,
+    record_call: bool = False,
 ) -> str:
     """
     Trigger an outbound call using Plivo's REST API.
@@ -31,6 +32,7 @@ def place_outbound_call(
         lead_id: Optional Team A lead record ID for post-call result correlation.
         session_id: Optional unique voice session ID.
         dispatch_id: Optional idempotency dispatch tracking ID.
+        record_call: Optional boolean to enable carrier-grade MP3 call recording.
         
     Returns:
         The Plivo request_uuid or call_uuid string.
@@ -70,16 +72,28 @@ def place_outbound_call(
         hangup_url += f"?lead_id={urllib.parse.quote(str(lead_id))}"
 
     masked_to = f"{to_number[:3]}******{to_number[-4:]}" if len(to_number) > 7 else to_number
-    logger.info(f"Placing Plivo outbound call: to={masked_to}, from={plivo_phone_number}, lead_id={lead_id}, dispatch_id={dispatch_id}")
+    logger.info(f"Placing Plivo outbound call: to={masked_to}, from={plivo_phone_number}, lead_id={lead_id}, dispatch_id={dispatch_id}, record_call={record_call}")
 
-    response = client.calls.create(
-        from_=plivo_phone_number,
-        to_=to_number,
-        answer_url=webhook_url,
-        answer_method="POST",
-        hangup_url=hangup_url,
-        hangup_method="POST",
-    )
+    call_kwargs = {
+        "from_": plivo_phone_number,
+        "to_": to_number,
+        "answer_url": webhook_url,
+        "answer_method": "POST",
+        "hangup_url": hangup_url,
+        "hangup_method": "POST",
+    }
+
+    if record_call:
+        recording_callback = f"{public_base_url.rstrip('/')}/api/telephony/recording-callback"
+        if query_params:
+            recording_callback += f"?{urllib.parse.urlencode(query_params)}"
+        call_kwargs["record"] = True
+        call_kwargs["record_callback_url"] = recording_callback
+        call_kwargs["record_callback_method"] = "POST"
+        call_kwargs["record_file_format"] = "mp3"
+        logger.info(f"Plivo Carrier Recording enabled. Callback URL: {recording_callback}")
+
+    response = client.calls.create(**call_kwargs)
 
     call_id = getattr(response, "request_uuid", None) or getattr(response, "call_uuid", None) or str(response)
     logger.info(f"Plivo outbound call initiated successfully. Call ID: {call_id}")

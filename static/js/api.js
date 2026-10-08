@@ -188,6 +188,29 @@ const api = {
     return fetchJSON("/api/call-history");
   },
 
+  async getRecordings(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return fetchJSON(`/api/recordings${query ? '?' + query : ''}`);
+  },
+
+  async deleteRecording(recordingId) {
+    return fetchJSON(`/api/recordings/${recordingId}`, {
+      method: "DELETE"
+    });
+  },
+
+  async uploadRecording(formData) {
+    const response = await fetch("/api/recordings/upload", {
+      method: "POST",
+      body: formData
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to upload call recording");
+    }
+    return response.json();
+  },
+
   async getHealth() {
     return fetchJSON("/health");
   }

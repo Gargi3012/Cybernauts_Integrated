@@ -13,6 +13,7 @@ class CybernautsApp {
       analytics: new AnalyticsView(),
       liveAgent: new LiveAgentView(),
       callHistory: new CallHistoryView(),
+      recordings: new RecordingsView(),
       settings: new SettingsView()
     };
     this.leadDetailView = new LeadDetailView();
@@ -400,9 +401,21 @@ class CybernautsApp {
       if (catsRes && catsRes.categories) {
         window.store.setCategories(catsRes.categories);
       }
+
+      this.updateRecordingCount();
     } catch (err) {
       console.warn("Initial data load notice:", err);
     }
+  }
+
+  async updateRecordingCount() {
+    try {
+      const recRes = await window.api.getRecordings({ limit: 1 });
+      if (recRes && recRes.count !== undefined) {
+        const badge = document.getElementById('sidebarRecordingCount');
+        if (badge) badge.innerText = recRes.count;
+      }
+    } catch (_) {}
   }
 
   handleRoute() {
@@ -430,6 +443,7 @@ class CybernautsApp {
         analytics: 'Analytics',
         liveAgent: 'Live AI Voice Agent',
         callHistory: 'Call History & Transcripts',
+        recordings: 'Call Recordings & Audio Archive',
         settings: 'Diagnostics & Settings'
       };
       breadcrumb.innerText = titleMap[targetView] || targetView;

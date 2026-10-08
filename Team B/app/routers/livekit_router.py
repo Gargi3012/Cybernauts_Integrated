@@ -204,6 +204,7 @@ async def trigger_outbound_call(payload: dict):
                 "call_prompt_attached": bool(prompt_config is not None),
             }
         else:
+            record_call = bool(payload.get("record_call") or payload.get("record"))
             try:
                 from Pillar_2.outbound_call import place_outbound_call
                 call_id = await asyncio.to_thread(
@@ -213,6 +214,7 @@ async def trigger_outbound_call(payload: dict):
                     lead_id=lead_id,
                     session_id=session_id,
                     dispatch_id=dispatch_id,
+                    record_call=record_call,
                 )
             except Exception:
                 from Pillar_2.plivo_outbound import place_plivo_outbound_call

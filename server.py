@@ -44,6 +44,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize Team A SQLite database: {e}")
 
+    # Initialize Call Recordings SQLite Database
+    try:
+        import recording_manager
+        recording_manager.init_recordings_db()
+        logger.info("Call Recordings SQLite database initialized.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Call Recordings SQLite database: {e}")
+
     # Initialize Team B PostgreSQL Database Pool
     try:
         db_manager.init_db()
@@ -114,6 +122,10 @@ team_b_app.router.routes = [
 
 # Include Team B REST & WebSocket endpoints (/inbound-call, /plivo/incoming, /ws, /api/login, /api/register, /api/livekit/join, /api/plivo/outbound, /ws/frontend)
 app.include_router(team_b_app.router)
+
+# Include Call Recordings REST APIs & Webhooks (/api/recordings, /api/recordings/upload, /api/telephony/recording-callback)
+from routers.recordings_router import router as recordings_router
+app.include_router(recordings_router)
 
 if __name__ == "__main__":
     import uvicorn
