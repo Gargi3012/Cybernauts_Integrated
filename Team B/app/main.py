@@ -478,6 +478,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 dispatch_id_val = websocket.query_params.get("dispatch_id") or custom_params.get("dispatch_id") or ""
                 webhook_processing_start = float(custom_params.get("webhook_processing_start", 0.0))
                 previous_summary = custom_params.get("previous_summary", "")
+                persona_val = websocket.query_params.get("persona") or custom_params.get("persona") or "shreya"
+                voice_val = websocket.query_params.get("voice") or custom_params.get("voice")
 
                 company_context = None
                 if company_context_raw:
@@ -587,6 +589,8 @@ async def websocket_endpoint(websocket: WebSocket):
             connection_metrics=connection_metrics,
             session_id=session_id_val,
             dispatch_id=dispatch_id_val,
+            persona=persona_val,
+            voice=voice_val,
         )
     except WebSocketDisconnect as e:
         logger.warning(f"Plivo WebSocket disconnected in endpoint: code={e.code}, reason={e.reason}")
@@ -830,11 +834,17 @@ async def run_voice_session(
     connection_metrics: dict = None,
     session_id: Optional[str] = None,
     dispatch_id: Optional[str] = None,
+    persona: Optional[str] = "shreya",
+    voice: Optional[str] = None,
 ) -> None:
     """Bootstrap and execute a single real-time voice session."""
 
     from app.db.connection import db_manager
     from app.repositories.session_repository import SessionRepository
+    from app.services.persona_registry import get_persona
+
+    active_persona = get_persona(persona or voice or "shreya")
+    resolved_voice = voice or active_persona.voice
 
     # ── 0. Call Prompt Configuration Resolution (Phase 5) ─────────────
     from app.services.call_config_registry import call_config_registry, CallPromptConfig
@@ -853,6 +863,11 @@ async def run_voice_session(
         "phone_number": phone_number,
         "dispatch_id": dispatch_id or "",
         "has_call_prompt": bool(call_prompt_config is not None),
+        "persona": active_persona.id,
+        "persona_name": active_persona.name,
+        "persona_gender": active_persona.gender,
+        "voice": resolved_voice,
+        "voice_id": resolved_voice,
     }
     if call_prompt_config:
         sess_metadata["call_prompt_len"] = len(call_prompt_config.call_prompt)
@@ -1169,9 +1184,10 @@ async def run_voice_session(
     pipeline_builder = PipelineFactory.create_voice_pipeline(
         event_bus=event_bus,
         session_id=session_id,
+        metadata={"tts": {"persona": active_persona.id, "voice": resolved_voice}}
     )
     pipeline = pipeline_builder.build()
-    logger.info("Pipeline DAG built | pipeline_id={pid}", pid=pipeline.pipeline_id)
+    logger.info(f"Pipeline DAG built | pipeline_id={pipeline.pipeline_id} | persona={active_persona.id} | voice={resolved_voice}")
 
     # ── 5. Transport Selection ──────────────────────────────────────────
     if not transport:
@@ -1179,7 +1195,7 @@ async def run_voice_session(
             from app.adapters.pipecat.transport import LiveKitTransportAdapter
             transport = LiveKitTransportAdapter(
                 room_url=LIVEKIT_URL,
-                bot_name=BOT_NAME,
+                bot_name=active_persona.name,
             )
             # LiveKitTransport does not have a register_events method to call here
             logger.info("LiveKitTransportAdapter ready | room={r}", r=LIVEKIT_URL)
@@ -1209,6 +1225,7 @@ async def run_voice_session(
         company_context=company_context,
         lead_id=lead_id,
         call_prompt_config=call_prompt_config,
+        persona=active_persona.id,
     )
     logger.info("PipecatAdapter ready | execution_id={eid}", eid=execution_id)
 

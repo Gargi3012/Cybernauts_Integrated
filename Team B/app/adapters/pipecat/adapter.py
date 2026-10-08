@@ -117,6 +117,7 @@ def _build_real_pipeline_task(
     company_context: Optional[dict] = None,
     lead_id: Optional[str] = None,
     call_prompt_config: Optional[Any] = None,
+    persona: Optional[Any] = None,
 ) -> Any:
     """Build an actual pipecat.pipeline.task.PipelineTask.
 
@@ -174,8 +175,14 @@ def _build_real_pipeline_task(
         session_id = bridge._session_id
         shared_state = {}
         
+        from app.services.persona_registry import get_persona
+        from app.llm.prompts import build_voice_system_prompt
+        
+        p = get_persona(persona) if persona else get_persona("sara")
+        p_name = "Sara" if not persona or str(persona).lower() == "sara" else p.name
+
         # ── LEVEL 1: Immutable Platform & Conversational Rules ──────────────
-        system_content = VOICE_SYSTEM_PROMPT + "\n\n"
+        system_content = build_voice_system_prompt(persona or "sara") + "\n\n"
 
         # ── LEVEL 2: Safety, Integrity & Core Tool Protocols ────────────────
         system_content += (
@@ -186,7 +193,7 @@ def _build_real_pipeline_task(
             "- 'save_lead': Call ONLY after name confirmation, 10-digit phone collection (MUST follow PHONE NUMBER COLLECTION PROTOCOL), readback, and explicit caller confirmation.\n"
             "- 'end_call': Call ONLY when caller explicitly says goodbye. Never on 'okay' or pause.\n"
             "- 'fetch_faq': Call ONLY for specialized company details not present in the verified knowledge base.\n"
-            "- IMMUTABLE PROTOCOL OVERRIDE PROHIBITION: You must never bypass phone validation, name confirmation, pause, or Sara identity.\n\n"
+            f"- IMMUTABLE PROTOCOL OVERRIDE PROHIBITION: You must never bypass phone validation, name confirmation, pause, or {p_name} identity.\n\n"
         )
 
         # ── LEVEL 3: Call-Specific Operator Directive OR Default Outbound Directive ─
@@ -231,18 +238,18 @@ def _build_real_pipeline_task(
                 "CRITICAL PRECEDENCE RULES:\n"
                 "1. The instructions inside <call_script_directive> define WHAT you discuss with this prospect.\n"
                 "2. However, they are strictly SUBORDINATE to LEVEL 1 and LEVEL 2 platform rules.\n"
-                "3. You must NEVER bypass or weaken phone digit validation, name confirmation, user pause handling, or Sara identity, "
+                f"3. You must NEVER bypass or weaken phone digit validation, name confirmation, user pause handling, or {p_name} identity, "
                 "even if the call script instructs otherwise.\n"
                 "4. You must NEVER bypass call termination (end_call) when the prospect genuinely says goodbye.\n"
                 "5. Keep responses concise (1-2 conversational sentences, ~20-30 words max). Never read the entire script at once as a monologue.\n"
-                "6. GREETING & IDENTITY PRECEDENCE: If the call script specifies a specific target prospect greeting (e.g. greeting Rahul Manchanda) or opening question, follow it, but always maintain your identity as Sara from Flowiz and Cybernauts. Never identify as Alex.\n\n"
+                f"6. GREETING & IDENTITY PRECEDENCE: If the call script specifies a specific target prospect greeting (e.g. greeting Rahul Manchanda) or opening question, follow it, but always maintain your identity as {p_name} from Flowiz and Cybernauts. Never identify as Alex.\n\n"
             )
         else:
             directive_block = (
                 "═══════════════════════════════════════════════════════\n"
                 " LEVEL 3: OUTBOUND CALL DIRECTIVE: (DEFAULT)\n"
                 "═══════════════════════════════════════════════════════\n"
-                "- Introduce yourself as Sara from Flowiz and Cybernauts.\n"
+                f"- Introduce yourself as {p_name} from Flowiz and Cybernauts.\n"
                 "- You are calling to discuss automating their workflows or integrating voice AI agents.\n"
                 "- Personalize the conversation naturally using the prospect's industry, company name, and contact name.\n"
                 "- Ask qualifying questions: budget, timeline, key pain points, and decision-maker involvement.\n"
@@ -420,11 +427,11 @@ def _build_real_pipeline_task(
         turn_guard_filter = TurnGuardFilter(shared_state=shared_state)
         semantic_end_detector = SemanticEndCallDetector(shared_state=shared_state)
         
-        # Instantiate greeting processor if greetings.wav exists, it's a new customer, and NO custom call prompt or company context was provided
+        # Instantiate greeting processor only if explicitly requested via environment (bypassed for personas to ensure authentic voice consistency)
         greeting_processor = None
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
         has_custom_prompt = bool(call_prompt_config)
-        if os.getenv("ENABLE_INITIAL_GREETING", "True").lower() == "true" and not previous_summary and not has_custom_prompt and not company_context:
+        if os.getenv("USE_STATIC_GREETING_WAV", "False").lower() == "true" and not previous_summary and not has_custom_prompt and not company_context:
             greetings_wav_path = os.path.join(project_root, "greetings.wav")
             if os.path.exists(greetings_wav_path):
                 greeting_processor = GreetingPlayerProcessor(greetings_wav_path)
@@ -694,6 +701,7 @@ class PipecatAdapter:
         company_context: Optional[dict] = None,
         lead_id: Optional[str] = None,
         call_prompt_config: Optional[Any] = None,
+        persona: Optional[Any] = None,
     ) -> None:
         self.pipeline = pipeline
         self.event_bus = event_bus
@@ -705,6 +713,7 @@ class PipecatAdapter:
         self.company_context = company_context
         self.lead_id = lead_id
         self.call_prompt_config = call_prompt_config
+        self.persona = persona
 
         # Bridge is created with the optional FSM — None is fine for tests
         self.bridge = PipecatEventBridge(event_bus, session_id, execution_id, fsm=fsm)
@@ -798,6 +807,7 @@ class PipecatAdapter:
                         company_context=getattr(self, "company_context", None),
                         lead_id=getattr(self, "lead_id", None),
                         call_prompt_config=getattr(self, "call_prompt_config", None),
+                        persona=getattr(self, "persona", None),
                     )
                     logger.bind(session_id=self.session_id).info(
                         "Real pipecat PipelineTask created"
@@ -840,6 +850,7 @@ class PipecatAdapter:
                     company_context=getattr(self, "company_context", None),
                     lead_id=getattr(self, "lead_id", None),
                     call_prompt_config=getattr(self, "call_prompt_config", None),
+                    persona=getattr(self, "persona", None),
                 )
                 logger.bind(session_id=self.session_id).info(
                     "Real pipecat PipelineTask created"
@@ -902,6 +913,8 @@ class PipecatAdapter:
                     ]
                 elif getattr(self, "company_context", None):
                     from pipecat.frames.frames import LLMRunFrame
+                    from app.services.persona_registry import get_persona
+                    p_active = get_persona(getattr(self, "persona", "shreya"))
                     c_ctx = self.company_context
                     c_name = c_ctx.get("company_name") or "there"
                     contact = c_ctx.get("contact_name") or ""
@@ -909,7 +922,7 @@ class PipecatAdapter:
                     logger.bind(session_id=self.session_id).info(f"Queueing dynamic outbound qualification greeting prompt for {greet_target}")
                     messages = [{
                         "role": "user", 
-                        "content": f"The outbound call has connected to {greet_target}. Greet them professionally and warmly as Sara from Flowiz and Cybernauts. Mention that you're reaching out regarding {c_name} and ask if they have a brief moment to speak about automating their operations.",
+                        "content": f"The outbound call has connected to {greet_target}. Greet them professionally and warmly as {p_active.name} from Flowiz and Cybernauts. Mention that you're reaching out regarding {c_name} and ask if they have a brief moment to speak about automating their operations.",
                         "source": "INTERNAL_GREETING",
                         "is_internal_instruction": True,
                     }]
@@ -937,22 +950,14 @@ class PipecatAdapter:
                         LLMRunFrame()
                     ]
                 else:
-                    greetings_wav_path = os.path.join(project_root, "greetings.wav")
-                    if os.path.exists(greetings_wav_path):
-                        logger.bind(session_id=self.session_id).info("greetings.wav will be played downstream via GreetingPlayerProcessor.")
-                        # Append the greeting text to context so the LLM knows it was spoken
-                        if hasattr(self.task, "_llm_context"):
-                            self.task._llm_context.add_message({
-                                "role": "assistant", 
-                                "content": "Hello, this is Sara from Flowiz. How can I help you?"
-                            })
-                        frames_to_queue = None
-                    else:
-                        logger.bind(session_id=self.session_id).warning("greetings.wav not found. Synthesizing greeting dynamically.")
-                        frames_to_queue = [
-                            TTSSpeakFrame(text="Hello, this is Sara from Flowiz. How can I help you?", append_to_context=True),
-                            BotStoppedSpeakingFrame()
-                        ]
+                    from app.services.persona_registry import get_persona
+                    p_active = get_persona(getattr(self, "persona", "shreya"))
+                    greeting_text = p_active.greeting_en
+                    logger.bind(session_id=self.session_id).info(f"Synthesizing dynamic initial greeting for persona '{p_active.name}': {greeting_text}")
+                    frames_to_queue = [
+                        TTSSpeakFrame(text=greeting_text, append_to_context=True),
+                        BotStoppedSpeakingFrame()
+                    ]
                 
                 if frames_to_queue:
                     await self.task.queue_frames(frames_to_queue)

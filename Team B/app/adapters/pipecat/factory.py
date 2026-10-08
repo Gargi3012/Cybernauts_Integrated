@@ -26,6 +26,7 @@ class PipecatFactory:
         company_context: Optional[dict] = None,
         lead_id: Optional[str] = None,
         call_prompt_config: Optional[Any] = None,
+        persona: Optional[Any] = None,
     ) -> PipecatAdapter:
         """Create and return a configured PipecatAdapter.
 
@@ -43,6 +44,7 @@ class PipecatFactory:
             company_context: Optional Team A lead company context dictionary.
             lead_id:      Optional Team A lead identifier.
             call_prompt_config: Optional call-specific prompt configuration.
+            persona:      Optional AI agent persona profile or ID.
         """
         return PipecatAdapter(
             pipeline=pipeline,
@@ -56,4 +58,5 @@ class PipecatFactory:
             company_context=company_context,
             lead_id=lead_id,
             call_prompt_config=call_prompt_config,
+            persona=persona,
         )

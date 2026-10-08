@@ -12,17 +12,20 @@ class PipelineFactory:
     """Helper class to stamp out common pipeline configurations."""
 
     @staticmethod
-    def create_voice_pipeline(event_bus: EventBus, session_id: str) -> PipelineBuilder:
+    def create_voice_pipeline(event_bus: EventBus, session_id: str, metadata: dict = None) -> PipelineBuilder:
         """Create a standard Real-Time Voice Pipeline builder.
         
         Transport -> STT -> LLM -> TTS -> Output
         """
         builder = PipelineBuilder(event_bus, session_id)
+        tts_meta = (metadata or {}).get("tts", {})
+        stt_meta = (metadata or {}).get("stt", {})
+        llm_meta = (metadata or {}).get("llm", {})
         
         builder.add_transport(ProcessorNode("transport_in", ProcessorRole.TRANSPORT_INPUT, "Microphone"))
-        builder.add_processor(ProcessorNode("stt", ProcessorRole.STT, "SpeechToText"))
-        builder.add_processor(ProcessorNode("llm", ProcessorRole.LLM, "LanguageModel"))
-        builder.add_processor(ProcessorNode("tts", ProcessorRole.TTS, "TextToSpeech"))
+        builder.add_processor(ProcessorNode("stt", ProcessorRole.STT, "SpeechToText", metadata=stt_meta))
+        builder.add_processor(ProcessorNode("llm", ProcessorRole.LLM, "LanguageModel", metadata=llm_meta))
+        builder.add_processor(ProcessorNode("tts", ProcessorRole.TTS, "TextToSpeech", metadata=tts_meta))
         builder.add_transport(ProcessorNode("transport_out", ProcessorRole.TRANSPORT_OUTPUT, "Speaker"))
         
         (

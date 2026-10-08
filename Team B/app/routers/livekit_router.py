@@ -217,6 +217,8 @@ async def trigger_outbound_call(payload: dict):
             }
         else:
             record_call = bool(payload.get("record_call") or payload.get("record"))
+            persona = payload.get("persona") or "shreya"
+            voice = payload.get("voice") or None
             try:
                 from Pillar_2.outbound_call import place_outbound_call
                 call_id = await asyncio.to_thread(
@@ -227,6 +229,8 @@ async def trigger_outbound_call(payload: dict):
                     session_id=session_id,
                     dispatch_id=dispatch_id,
                     record_call=record_call,
+                    persona=persona,
+                    voice=voice,
                 )
             except Exception:
                 from Pillar_2.plivo_outbound import place_plivo_outbound_call
