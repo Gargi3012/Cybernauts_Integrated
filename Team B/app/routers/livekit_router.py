@@ -116,11 +116,21 @@ async def register(payload: LoginRequest):
         logger.error(f"Database error during registration: {e}")
         raise HTTPException(status_code=500, detail="Failed to register user")
 
+@router.get("/api/personas")
+async def get_available_personas():
+    from app.services.persona_registry import list_personas
+    return {"personas": list_personas()}
+
+
 @router.post("/api/livekit/join", dependencies=[Depends(rate_limit), Depends(verify_jwt)])
 async def join_livekit_room(request: dict = None):
     if os.getenv("TRANSPORT_MODE") != "livekit":
         raise HTTPException(status_code=400, detail="Not in LiveKit mode")
         
+    req_data = request or {}
+    persona_id = req_data.get("persona") or "shreya"
+    voice_id = req_data.get("voice") or None
+
     # Generate token
     from app.config import LIVEKIT_ROOM
     room_name = LIVEKIT_ROOM
@@ -140,13 +150,15 @@ async def join_livekit_room(request: dict = None):
         
         try:
             from app.main import run_voice_session
-            asyncio.create_task(run_voice_session())
+            asyncio.create_task(run_voice_session(persona=persona_id, voice=voice_id))
         except Exception as e:
             logger.exception(f"Failed to start voice session background task: {e}")
         
         return {
             "token": token.to_jwt(),
-            "roomUrl": os.getenv("LIVEKIT_URL")
+            "roomUrl": os.getenv("LIVEKIT_URL"),
+            "persona": persona_id,
+            "voice": voice_id
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
