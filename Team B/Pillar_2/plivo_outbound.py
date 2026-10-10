@@ -7,7 +7,16 @@ import plivo
 load_dotenv(override=False)
 
 
-def place_plivo_outbound_call(to_number: str, company_context: str | None = None) -> str:
+def place_plivo_outbound_call(
+    to_number: str,
+    company_context: str | None = None,
+    persona: str | None = None,
+    voice: str | None = None,
+    lead_id: str | None = None,
+    session_id: str | None = None,
+    dispatch_id: str | None = None,
+    record_call: bool = False,
+) -> str:
     server_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL", "")).rstrip("/")
     plivo_auth_id = os.getenv("PLIVO_AUTH_ID", "")
     plivo_auth_token = os.getenv("PLIVO_AUTH_TOKEN", "")
@@ -27,8 +36,24 @@ def place_plivo_outbound_call(to_number: str, company_context: str | None = None
 
     # Webhook URL pointing to our Plivo answer endpoint
     answer_url = f"{server_base_url}/inbound-call"
+    params = {}
     if company_context:
-        answer_url += f"?company_context={urllib.parse.quote(company_context)}"
+        params["company_context"] = company_context
+    if persona:
+        params["persona"] = persona
+    if voice:
+        params["voice"] = voice
+    if lead_id:
+        params["lead_id"] = str(lead_id)
+    if session_id:
+        params["session_id"] = str(session_id)
+    if dispatch_id:
+        params["dispatch_id"] = str(dispatch_id)
+    if record_call:
+        params["record_call"] = "true"
+
+    if params:
+        answer_url += f"?{urllib.parse.urlencode(params)}"
 
     logger.info(f"Placing Plivo outbound call: to={to_number}, from={plivo_phone_number}, answer_url={answer_url}")
 

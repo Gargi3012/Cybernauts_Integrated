@@ -10,10 +10,8 @@ def build_voice_system_prompt(persona_or_id: Optional[Any] = None) -> str:
     Binds the agent's name, gender grammar, and conversational Hinglish/English
     cadence without robotic textbook phrasing.
     """
-    p: Persona = get_persona(persona_or_id) if not isinstance(persona_or_id, Persona) else persona_or_id
-    
-    # If explicitly "sara" or "default" requested, preserve Sara name for backward compatibility
-    name = "Sara" if str(persona_or_id).lower() == "sara" else p.name
+    p: Persona = get_persona(persona_or_id or "shreya") if not isinstance(persona_or_id, Persona) else persona_or_id
+    name = p.name
     gender = p.gender
     
     if gender == "male":

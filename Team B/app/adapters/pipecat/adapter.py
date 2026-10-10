@@ -178,11 +178,11 @@ def _build_real_pipeline_task(
         from app.services.persona_registry import get_persona
         from app.llm.prompts import build_voice_system_prompt
         
-        p = get_persona(persona) if persona else get_persona("sara")
-        p_name = "Sara" if not persona or str(persona).lower() == "sara" else p.name
+        p = get_persona(persona) if persona else get_persona("shreya")
+        p_name = p.name
 
         # ── LEVEL 1: Immutable Platform & Conversational Rules ──────────────
-        system_content = build_voice_system_prompt(persona or "sara") + "\n\n"
+        system_content = build_voice_system_prompt(p) + "\n\n"
 
         # ── LEVEL 2: Safety, Integrity & Core Tool Protocols ────────────────
         system_content += (
@@ -215,6 +215,8 @@ def _build_real_pipeline_task(
                 custom_script = call_prompt_config
 
         if custom_script and custom_script.strip():
+            import re
+            custom_script = re.sub(r'\b(as|I am|I\'m|name is)\s+(Sara|Alex)\b', rf'\1 {p_name}', custom_script, flags=re.IGNORECASE)
             script_hash = hashlib.sha256(custom_script.encode("utf-8")).hexdigest()[:12]
             logger.info(
                 f"[CALL_PROMPT_APPLIED] Applying call-specific prompt | "
@@ -448,7 +450,7 @@ def _build_real_pipeline_task(
                 new_processors.append(turn_guard_filter)
                 new_processors.append(dynamic_filler_proc)
                 new_processors.append(ToolInterceptionProcessor(shared_state=shared_state))
-            elif p.__class__.__name__.endswith("TTSService"):
+            elif p.__class__.__name__.endswith("TTSService") or "TTS" in p.__class__.__name__:
                 new_processors.append(p)
                 new_processors.append(CallTerminationProcessor(shared_state=shared_state))
                 new_processors.append(asst_agg)
@@ -632,7 +634,7 @@ def _build_real_pipeline_task(
                     bridge.on_llm_response_ready(full_resp)
                     self._llm_response_emitted_for_turn = True
                 
-            elif isinstance(frame, TTSStartedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
+            elif isinstance(frame, TTSStartedFrame) and ("TTS" in source_class or source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor")):
                 logger.info(f"[VOICE] TTS input received / TTS audio started | source={source_class} | session_id={bridge._session_id}")
                 self._tts_speaking = True
                 shared_state["tts_speaking"] = True
@@ -640,12 +642,12 @@ def _build_real_pipeline_task(
                     latency_tracker.on_tts_start()
                 bridge.on_audio_started()
                 
-            elif isinstance(frame, AudioRawFrame) and source_class in ("CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "SarvamTTSService"):
+            elif isinstance(frame, AudioRawFrame) and ("TTS" in source_class or source_class in ("CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "SarvamTTSService")):
                 if not getattr(self, "_first_audio_packet_sent", False):
                     logger.info(f"[VOICE] TTS audio generated / audio published | source={source_class} | session_id={bridge._session_id}")
                     self._first_audio_packet_sent = True
                 
-            elif isinstance(frame, TTSStoppedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
+            elif isinstance(frame, TTSStoppedFrame) and ("TTS" in source_class or source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor")):
                 logger.info(f"[VOICE] TTS audio playback completed | source={source_class} | session_id={bridge._session_id}")
                 self._tts_speaking = False
                 shared_state["tts_speaking"] = False

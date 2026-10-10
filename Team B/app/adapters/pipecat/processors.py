@@ -622,12 +622,10 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
             logger.info(f"CartesiaTTSService created | voice_id={voice_id} | model={model} | language={language} (timestamps disabled)")
 
             def fallback_sarvam_factory():
-                if not SARVAM_API_KEY:
-                    raise ValueError("SARVAM_API_KEY not configured for TTS fallback.")
                 s_voice = metadata.get("voice", metadata.get("voice_id", SARVAM_TTS_VOICE))
                 s_model = metadata.get("model", SARVAM_TTS_MODEL)
                 return SarvamTTSService(
-                    api_key=SARVAM_API_KEY,
+                    api_key=SARVAM_API_KEY or "",
                     voice=s_voice,
                     model=s_model,
                     sample_rate=sample_rate,
@@ -748,13 +746,10 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
             from app.adapters.pipecat.sarvam_tts_service import SarvamTTSService
             from app.config import SARVAM_API_KEY, SARVAM_TTS_VOICE, SARVAM_TTS_MODEL
 
-            if not SARVAM_API_KEY:
-                raise ValueError("SARVAM_API_KEY is not set in your .env file.")
-
             voice = metadata.get("voice", metadata.get("voice_id", SARVAM_TTS_VOICE))
             model = metadata.get("model", SARVAM_TTS_MODEL)
             tts = SarvamTTSService(
-                api_key=SARVAM_API_KEY,
+                api_key=SARVAM_API_KEY or "",
                 voice=voice,
                 model=model,
                 sample_rate=sample_rate,

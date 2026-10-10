@@ -235,7 +235,17 @@ async def trigger_outbound_call(payload: dict):
             except Exception as call_err:
                 logger.warning(f"place_outbound_call failed: {call_err}. Falling back to place_plivo_outbound_call...")
                 from Pillar_2.plivo_outbound import place_plivo_outbound_call
-                call_id = await asyncio.to_thread(place_plivo_outbound_call, phone_number, company_context_str)
+                call_id = await asyncio.to_thread(
+                    place_plivo_outbound_call,
+                    phone_number,
+                    company_context=company_context_str,
+                    persona=persona,
+                    voice=voice,
+                    lead_id=lead_id,
+                    session_id=session_id,
+                    dispatch_id=dispatch_id,
+                    record_call=record_call,
+                )
             return {
                 "status": "success",
                 "callSid": call_id,

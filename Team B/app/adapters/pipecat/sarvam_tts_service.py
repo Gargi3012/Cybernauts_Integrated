@@ -1,14 +1,18 @@
-
 """
-Custom Pipecat TTS service for Sarvam AI (supporting Shreya, Meera, etc.).
+High-Performance Real-Time Voice Synthesis Engine for Indian AI Personas.
+Supports Sarvam AI Bulbul models and ultra-low-latency Microsoft Edge Neural
+Indian voices (hi-IN-SwaraNeural for Shreya, en-IN-NeerjaNeural for Ritu,
+hi-IN-MadhurNeural for Ratan, en-IN-PrabhatNeural for Manan).
+Includes instant clause-level streaming and proactive quota-exhaustion fallback.
 """
 
 import asyncio
 import base64
 import io
+import re
+import time
 import wave
 from typing import AsyncGenerator, Optional, AsyncIterator
-import re
 
 import aiohttp
 from loguru import logger
@@ -17,6 +21,37 @@ from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSStartedFrame, TTSS
 from pipecat.services.tts_service import TTSService
 from pipecat.utils.text.base_text_aggregator import BaseTextAggregator
 from pipecat.utils.text.simple_text_aggregator import Aggregation
+
+# Global quota state tracking to prevent repeated 402 latency penalties
+_SARVAM_QUOTA_EXHAUSTED: bool = False
+_SARVAM_LAST_ERROR_TIME: float = 0.0
+_LAST_SEEN_KEY: str = ""
+
+# Canonical Microsoft Edge Neural Indian Voice Mappings
+EDGE_NEURAL_VOICE_MAP = {
+    "shreya": "hi-IN-SwaraNeural",       # Natural, expressive, warm Hindi female voice
+    "sara": "hi-IN-SwaraNeural",         # Backward compatible Shreya alias
+    "ritu": "en-IN-NeerjaNeural",        # Calm, clear, professional Indian English/Hindi female voice
+    "meera": "en-IN-NeerjaNeural",       # Ritu alias
+    "ratan": "hi-IN-MadhurNeural",       # Confident, authoritative Indian Hindi male voice
+    "arvind": "hi-IN-MadhurNeural",      # Ratan alias
+    "manan": "en-IN-PrabhatNeural",      # Modern, crisp, energetic Indian English/Hindi male voice
+    "dhruv": "en-IN-PrabhatNeural",      # Manan alias
+    "default": "hi-IN-SwaraNeural",
+}
+
+
+def reset_sarvam_quota_status() -> None:
+    """Manually reset the Sarvam quota exhaustion flag."""
+    global _SARVAM_QUOTA_EXHAUSTED
+    _SARVAM_QUOTA_EXHAUSTED = False
+    logger.info("Sarvam AI quota exhaustion status has been reset.")
+
+
+def get_edge_neural_voice(voice_id: str) -> str:
+    """Resolve an Indian Neural voice for the specified persona."""
+    clean_id = (voice_id or "shreya").strip().lower()
+    return EDGE_NEURAL_VOICE_MAP.get(clean_id, "hi-IN-SwaraNeural")
 
 
 class LowLatencyClauseAggregator(BaseTextAggregator):
@@ -46,7 +81,6 @@ class LowLatencyClauseAggregator(BaseTextAggregator):
             if match:
                 clause = match.group(1).strip()
                 remainder = match.group(2)
-                # Ensure clause contains at least two non-punctuation characters
                 clean_clause = re.sub(r'[,;:.!?—\n।\s]', '', clause)
                 if len(clean_clause) >= 2:
                     self._buffer = remainder
@@ -60,11 +94,8 @@ class LowLatencyClauseAggregator(BaseTextAggregator):
             if len(words) >= threshold:
                 split_idx = self._buffer.rfind(" ")
                 if split_idx > 0:
-                    # Prevent slicing through an active sequence of spaced phone digits
                     digit_tokens = [w for w in words if w.isdigit() and len(w) == 1]
                     if len(digit_tokens) >= 2:
-                        # If there is non-digit preamble before the digits (e.g. 'your number is'),
-                        # split before the first digit so the preamble can stream immediately.
                         m = re.search(r'\s+(\d(?:\s+\d)*)', self._buffer)
                         if m and m.start() > 0:
                             preamble = self._buffer[:m.start()].strip()
@@ -73,7 +104,6 @@ class LowLatencyClauseAggregator(BaseTextAggregator):
                                 self._first_clause = False
                                 yield Aggregation(text=preamble, type=AggregationType.SENTENCE)
                                 continue
-                        # While accumulating remaining digits, wait for punctuation or flush
                         break
 
                     phrase = self._buffer[:split_idx].strip()
@@ -101,12 +131,17 @@ class LowLatencyClauseAggregator(BaseTextAggregator):
 
 
 class SarvamTTSService(TTSService):
-    """Real-time TTS service using Sarvam AI Bulbul models."""
+    """
+    Real-time high-fidelity TTS service.
+    Directly supports Sarvam AI models with automatic zero-lag fallback to
+    native Microsoft Edge Neural Indian voices (hi-IN-SwaraNeural, en-IN-NeerjaNeural,
+    hi-IN-MadhurNeural, en-IN-PrabhatNeural) when Sarvam quota is exhausted or unconfigured.
+    """
 
     def __init__(
         self,
         *,
-        api_key: str,
+        api_key: Optional[str] = None,
         voice: str = "shreya",
         model: str = "bulbul:v3",
         target_language_code: str = "hi-IN",
@@ -147,13 +182,20 @@ class SarvamTTSService(TTSService):
             ),
             **kwargs
         )
-        self.api_key = api_key
+        import os
+        resolved_key = (api_key or os.getenv("SARVAM_API_KEY") or "").strip()
+        global _LAST_SEEN_KEY, _SARVAM_QUOTA_EXHAUSTED
+        if resolved_key and resolved_key != _LAST_SEEN_KEY:
+            _LAST_SEEN_KEY = resolved_key
+            _SARVAM_QUOTA_EXHAUSTED = False
+            logger.info("New Sarvam API key detected. Resetting quota status to active.")
+        self.api_key = resolved_key
         self.voice = resolved_voice
+        self.edge_voice = get_edge_neural_voice(resolved_voice)
         self.model = model
         self.target_language_code = target_language_code
         self.url = "https://api.sarvam.ai/text-to-speech"
         self._session: Optional[aiohttp.ClientSession] = None
-        # Replace default sentence-lookahead aggregator with immediate low-latency clause aggregator
         self._text_aggregator = LowLatencyClauseAggregator()
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -183,107 +225,154 @@ class SarvamTTSService(TTSService):
     def can_generate_metrics(self) -> bool:
         return True
 
+    async def _stream_edge_neural_pcm(
+        self, clause_text: str, req_sample_rate: int
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Synthesizes text using Microsoft Edge Neural Indian voices and streams
+        resampled 16-bit mono PCM chunks in real-time using PyAV.
+        """
+        import edge_tts
+        import av
+
+        edge_voice = self.edge_voice
+        logger.info(
+            f"[NEURAL_TTS] Streaming Indian Neural Voice | voice='{self.voice}' | "
+            f"model='{edge_voice}' | rate={req_sample_rate}Hz | clause='{clause_text[:40]}...'"
+        )
+
+        codec = av.Codec('mp3', 'r')
+        ctx = av.CodecContext.create(codec)
+        resampler = av.AudioResampler(format='s16', layout='mono', rate=req_sample_rate)
+
+        communicate = edge_tts.Communicate(clause_text, edge_voice)
+        
+        pcm_accumulator = bytearray()
+        # Stream chunks of 1280 bytes (40ms @ 16kHz, 80ms @ 8kHz) for smooth streaming
+        chunk_delivery_size = 1280
+
+        async for chunk in communicate.stream():
+            if chunk.get('type') == 'audio':
+                packets = ctx.parse(chunk['data'])
+                for packet in packets:
+                    for frame in ctx.decode(packet):
+                        resampled = resampler.resample(frame)
+                        for rf in resampled:
+                            pcm_accumulator.extend(rf.to_ndarray().tobytes())
+                            while len(pcm_accumulator) >= chunk_delivery_size:
+                                yield bytes(pcm_accumulator[:chunk_delivery_size])
+                                pcm_accumulator = pcm_accumulator[chunk_delivery_size:]
+
+        # Flush decoder buffer
+        for frame in ctx.decode(None):
+            for rf in resampler.resample(frame):
+                pcm_accumulator.extend(rf.to_ndarray().tobytes())
+                while len(pcm_accumulator) >= chunk_delivery_size:
+                    yield bytes(pcm_accumulator[:chunk_delivery_size])
+                    pcm_accumulator = pcm_accumulator[chunk_delivery_size:]
+
+        if pcm_accumulator:
+            yield bytes(pcm_accumulator)
+
     async def run_tts(self, text: str, *args, **kwargs) -> AsyncGenerator[Frame, None]:
+        global _SARVAM_QUOTA_EXHAUSTED, _SARVAM_LAST_ERROR_TIME
+
         if not text or not text.strip():
             return
 
-        if not self.api_key:
-            logger.error("SarvamTTSService error: SARVAM_API_KEY is missing.")
-            yield ErrorFrame(error="Sarvam API key is missing")
-            return
-
-        import re
         clauses = [c.strip() for c in re.split(r'(?<=[.?!,;])\s+', text.strip()) if c.strip()]
         if not clauses:
             clauses = [text.strip()]
 
+        req_sample_rate = self.sample_rate if self.sample_rate in (8000, 16000, 22050) else 16000
+
         try:
             yield TTSStartedFrame()
-            
-            session = await self._get_session()
-            headers = {
-                "api-subscription-key": self.api_key,
-                "Content-Type": "application/json",
-            }
-            req_sample_rate = self.sample_rate if self.sample_rate in (8000, 16000, 22050) else 16000
 
-            # Helper async function to fetch audio for a single clause
-            async def fetch_clause_audio(clause_text: str):
-                logger.info(f"SarvamTTSService: generating clause audio | voice='{self.voice}' | clause='{clause_text[:40]}...'")
-                payload = {
-                    "inputs": [clause_text],
-                    "target_language_code": self.target_language_code,
-                    "speaker": self.voice,
-                    "pace": 1.08,
-                    "speech_sample_rate": req_sample_rate,
-                    "enable_preprocessing": False,
-                    "model": self.model,
-                }
-                if "v3" not in self.model.lower():
-                    payload["pitch"] = 0
-                    payload["loudness"] = 1.5
+            # Determine whether to attempt Sarvam or stream directly via Neural Indian Voice Engine
+            should_try_sarvam = bool(self.api_key and not _SARVAM_QUOTA_EXHAUSTED)
 
-                async with session.post(self.url, headers=headers, json=payload, timeout=15) as resp:
-                    if resp.status != 200:
-                        err_body = await resp.text()
-                        logger.warning(f"Sarvam AI TTS API status {resp.status}: {err_body[:100]}. Triggering high-quality fallback TTS...")
-                        try:
-                            import os
-                            openai_key = os.getenv("OPENAI_API_KEY")
-                            if openai_key:
-                                from openai import AsyncOpenAI
-                                oai_client = AsyncOpenAI(api_key=openai_key)
-                                oai_voice_map = {"shreya": "nova", "ritu": "shimmer", "ratan": "onyx", "manan": "echo"}
-                                oai_voice = oai_voice_map.get(self.voice.lower(), "nova" if self.voice in ("shreya", "ritu") else "onyx")
-                                oai_resp = await oai_client.audio.speech.create(
-                                    model="tts-1",
-                                    voice=oai_voice,
-                                    response_format="wav",
-                                    input=clause_text
-                                )
-                                return oai_resp.content
-                        except Exception as fb_err:
-                            logger.error(f"Fallback TTS failed: {fb_err}")
-                        return None
-                    data = await resp.json()
-                    audios = data.get("audios", [])
-                    if not audios:
-                        return None
-                    return base64.b64decode(audios[0])
+            for clause in clauses:
+                emitted_for_clause = False
 
-            # Launch async pre-fetch tasks for all clauses in parallel
-            fetch_tasks = [asyncio.create_task(fetch_clause_audio(c)) for c in clauses]
+                if should_try_sarvam:
+                    try:
+                        session = await self._get_session()
+                        headers = {
+                            "api-subscription-key": self.api_key,
+                            "Content-Type": "application/json",
+                        }
+                        payload = {
+                            "inputs": [clause],
+                            "target_language_code": self.target_language_code,
+                            "speaker": self.voice,
+                            "pace": 1.08,
+                            "speech_sample_rate": req_sample_rate,
+                            "enable_preprocessing": False,
+                            "model": self.model,
+                        }
+                        if "v3" not in self.model.lower():
+                            payload["pitch"] = 0
+                            payload["loudness"] = 1.5
 
-            for task in fetch_tasks:
-                audio_bytes = await task
-                if not audio_bytes:
-                    continue
+                        async with session.post(self.url, headers=headers, json=payload, timeout=6.0) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                audios = data.get("audios", [])
+                                if audios:
+                                    raw_audio = base64.b64decode(audios[0])
+                                    raw_pcm = raw_audio
+                                    detected_rate = req_sample_rate
+                                    num_channels = 1
+                                    try:
+                                        with wave.open(io.BytesIO(raw_audio), 'rb') as wav_file:
+                                            detected_rate = wav_file.getframerate()
+                                            num_channels = wav_file.getnchannels()
+                                            raw_pcm = wav_file.readframes(wav_file.getnframes())
+                                    except Exception:
+                                        pass
 
-                # Extract raw PCM bytes from WAV container
-                raw_pcm = audio_bytes
-                detected_rate = req_sample_rate
-                num_channels = 1
+                                    chunk_size = 1280
+                                    for i in range(0, len(raw_pcm), chunk_size):
+                                        chunk = raw_pcm[i : i + chunk_size]
+                                        yield TTSAudioRawFrame(
+                                            audio=chunk,
+                                            sample_rate=detected_rate,
+                                            num_channels=num_channels,
+                                        )
+                                    emitted_for_clause = True
+                            else:
+                                err_body = await resp.text()
+                                if resp.status == 402 or "insufficient_quota" in err_body.lower() or "credits" in err_body.lower():
+                                    _SARVAM_QUOTA_EXHAUSTED = True
+                                    _SARVAM_LAST_ERROR_TIME = time.time()
+                                    logger.warning(
+                                        f"[VOICE_ENGINE] Sarvam quota exhausted (HTTP 402). "
+                                        f"Instantly switching to high-fidelity Neural Indian Voice engine: "
+                                        f"persona='{self.voice}' -> model='{self.edge_voice}'"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"[VOICE_ENGINE] Sarvam API returned status {resp.status}. "
+                                        f"Routing to Neural Indian Voice engine."
+                                    )
+                                should_try_sarvam = False
 
-                try:
-                    with wave.open(io.BytesIO(audio_bytes), 'rb') as wav_file:
-                        detected_rate = wav_file.getframerate()
-                        num_channels = wav_file.getnchannels()
-                        raw_pcm = wav_file.readframes(wav_file.getnframes())
-                except Exception as wav_err:
-                    logger.debug(f"Parsing WAV header failed (assuming raw PCM): {wav_err}")
+                    except Exception as s_err:
+                        logger.warning(f"[VOICE_ENGINE] Sarvam request error: {s_err}. Routing to Neural Indian Voice engine.")
+                        should_try_sarvam = False
 
-                # Stream audio in 4KB PCM chunks
-                chunk_size = 4096
-                for i in range(0, len(raw_pcm), chunk_size):
-                    chunk = raw_pcm[i : i + chunk_size]
-                    yield TTSAudioRawFrame(
-                        audio=chunk,
-                        sample_rate=detected_rate,
-                        num_channels=num_channels,
-                    )
+                # If Sarvam was not attempted, failed, or quota exhausted, stream via Edge Neural Voice
+                if not emitted_for_clause:
+                    async for pcm_chunk in self._stream_edge_neural_pcm(clause, req_sample_rate):
+                        yield TTSAudioRawFrame(
+                            audio=pcm_chunk,
+                            sample_rate=req_sample_rate,
+                            num_channels=1,
+                        )
 
             yield TTSStoppedFrame()
 
         except Exception as e:
-            logger.error(f"SarvamTTSService error: {e}")
-            yield ErrorFrame(error=f"Sarvam TTS generation failed: {e}")
+            logger.error(f"SarvamTTSService execution error: {e}")
+            yield ErrorFrame(error=f"Voice synthesis failed: {e}")

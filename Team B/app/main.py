@@ -293,6 +293,8 @@ async def handle_plivo_inbound_call(request: Request):
     session_id = form_dict.get("session_id") or request.query_params.get("session_id", "")
     dispatch_id = form_dict.get("dispatch_id") or request.query_params.get("dispatch_id", "")
     company_context_raw = form_dict.get("company_context") or request.query_params.get("company_context", "")
+    persona = form_dict.get("persona") or request.query_params.get("persona", "")
+    voice = form_dict.get("voice") or request.query_params.get("voice", "")
 
     is_outbound = bool(lead_id or domain or session_id or dispatch_id or company_context_raw)
 
@@ -304,7 +306,7 @@ async def handle_plivo_inbound_call(request: Request):
     # company context are already authoritatively held in CallConfigRegistry / local state.
     # Remote Neon PostgreSQL MUST NOT block the answer webhook critical path.
     if is_outbound:
-        logger.info(f"Outbound qualification call detected | lead={lead_id or domain} | session={session_id} | dispatch={dispatch_id}. Bypassing synchronous remote DB pre-fetch.")
+        logger.info(f"Outbound qualification call detected | lead={lead_id or domain} | session={session_id} | dispatch={dispatch_id} | persona={persona}. Bypassing synchronous remote DB pre-fetch.")
         # Non-critical: sync client record in background asynchronously for post-call audit/analytics
         if phone_number and phone_number != "unknown_client":
             async def _bg_sync_client():
@@ -355,7 +357,7 @@ async def handle_plivo_inbound_call(request: Request):
         else:
             stream_base = f"{scheme}://{host or 'localhost:8000'}"
 
-    extra_headers = f"phone={phone_number};client_id={client_id_str};call_id={call_id};previous_summary={xml_escape(previous_summary)}"
+    extra_headers = f"phone={phone_number};client_id={client_id_str};call_id={call_id};persona={persona};voice={voice};previous_summary={xml_escape(previous_summary)}"
 
     if lead_id or domain:
         # Lead-aware stream routing to /ws with query params
@@ -376,12 +378,20 @@ async def handle_plivo_inbound_call(request: Request):
             query_params.append(f"dispatch_id={urllib.parse.quote(dispatch_id)}")
         if company_context_raw:
             query_params.append(f"company_context={urllib.parse.quote(company_context_raw)}")
+        if persona:
+            query_params.append(f"persona={urllib.parse.quote(persona)}")
+        if voice:
+            query_params.append(f"voice={urllib.parse.quote(voice)}")
         stream_url = f"{stream_base}/ws?{'&amp;'.join(query_params)}"
     else:
         # Standard telephony stream routing to /ws/plivo
         plivo_params = [f"phone={phone_encoded}", f"client_id={client_id_encoded}", f"call_id={call_id_encoded}"]
         if company_context_raw:
             plivo_params.append(f"company_context={urllib.parse.quote(company_context_raw)}")
+        if persona:
+            plivo_params.append(f"persona={urllib.parse.quote(persona)}")
+        if voice:
+            plivo_params.append(f"voice={urllib.parse.quote(voice)}")
         stream_url = f"{stream_base}/ws/plivo?{'&amp;'.join(plivo_params)}"
 
     record_call = form_dict.get("record_call") == "true" or request.query_params.get("record_call") == "true"
@@ -649,6 +659,8 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
     lead_id = websocket.query_params.get("lead_id", "") or websocket.query_params.get("domain", "")
     session_id_val = websocket.query_params.get("session_id", "")
     dispatch_id_val = websocket.query_params.get("dispatch_id", "")
+    persona_val = websocket.query_params.get("persona") or "shreya"
+    voice_val = websocket.query_params.get("voice") or None
     company_context = None
     previous_summary = ""
 
@@ -697,6 +709,10 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
                                 dispatch_id_val = v
                             elif k == "previous_summary" and not previous_summary:
                                 previous_summary = v
+                            elif k == "persona" and (not persona_val or persona_val == "shreya"):
+                                persona_val = v
+                            elif k == "voice" and not voice_val:
+                                voice_val = v
 
                 # In-memory atomic stream ownership claim (0.01ms, non-blocking)
                 async with _ACTIVE_STREAMS_LOCK:
@@ -796,6 +812,8 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
             connection_metrics=connection_metrics,
             session_id=session_id_val,
             dispatch_id=dispatch_id_val,
+            persona=persona_val,
+            voice=voice_val,
         )
     except WebSocketDisconnect as e:
         logger.warning(f"Plivo WebSocket disconnected in endpoint: code={e.code}, reason={e.reason}")

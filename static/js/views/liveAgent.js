@@ -580,7 +580,7 @@ class LiveAgentView {
               class="form-input" 
               rows="4" 
               maxlength="2500" 
-              placeholder="Write what this call is about, topics to discuss, questions to ask, qualification criteria, and how the AI agent should handle the customer. (e.g. Introduce yourself as Sara from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."
+              placeholder="Write what this call is about, topics to discuss, questions to ask, qualification criteria, and how the AI agent should handle the customer. (e.g. Introduce yourself as ${selectedPersona.name} from Flowiz. Inquire about their current outbound lead qualification process and biggest bottlenecks. If interested, propose a 15-minute product walkthrough. Be warm and concise.)."
               style="width: 100%; font-size: 12.5px; line-height: 1.45; resize: vertical; font-family: inherit;"
             >${(activeCall && activeCall.call_prompt) ? activeCall.call_prompt : ''}</textarea>
 
@@ -909,10 +909,13 @@ class LiveAgentView {
     }
 
     // Call prompt templates & character count
+    const activePersonaObj = (window.store && window.store.getSelectedPersona) ? window.store.getSelectedPersona() : null;
+    const personaDisplayName = (activePersonaObj && activePersonaObj.name) || 'Shreya';
+
     const SCRIPT_TEMPLATES = {
-      b2b_discovery: "Introduce yourself as Sara from Flowiz and Cybernauts. Personalize the conversation with the prospect's company and industry. Ask how they currently handle lead qualification and customer follow-ups. Inquire about their biggest operational bottlenecks. If they show interest, briefly explain our automated workflows and ask if they are open to a brief follow-up discussion. Do not be pushy.",
-      ai_automation: "This call is for introducing our Voice AI Telephony agents to automate outbound customer reach and qualification. Ask the prospect if their sales team currently faces high call volume or manual dialer delays. Explain how our voice agents achieve zero-latency natural conversations in English and Hindi. If interested, ask for the best contact person and timeline for a live demonstration.",
-      executive_followup: "Follow up with the prospect regarding our previous discussion on enterprise automation. Inquire if they have reviewed our technical capabilities and if they have any specific questions regarding integration or pricing. If they are ready, offer to schedule a technical alignment call with our engineering leads."
+      b2b_discovery: `Introduce yourself as ${personaDisplayName} from Flowiz and Cybernauts. Personalize the conversation with the prospect's company and industry. Ask how they currently handle lead qualification and customer follow-ups. Inquire about their biggest operational bottlenecks. If they show interest, briefly explain our automated workflows and ask if they are open to a brief follow-up discussion. Do not be pushy.`,
+      ai_automation: `This call is for introducing our Voice AI Telephony agents to automate outbound customer reach and qualification. Introduce yourself as ${personaDisplayName} from Flowiz. Ask the prospect if their sales team currently faces high call volume or manual dialer delays. Explain how our voice agents achieve zero-latency natural conversations in English and Hindi. If interested, ask for the best contact person and timeline for a live demonstration.`,
+      executive_followup: `Introduce yourself as ${personaDisplayName} from Flowiz and Cybernauts. Follow up with the prospect regarding our previous discussion on enterprise automation. Inquire if they have reviewed our technical capabilities and if they have any specific questions regarding integration or pricing. If they are ready, offer to schedule a technical alignment call with our engineering leads.`
     };
 
     const selTemplate = container.querySelector('#selCallScriptTemplate');
@@ -928,8 +931,11 @@ class LiveAgentView {
 
     if (selTemplate && txtPrompt) {
       selTemplate.addEventListener('change', () => {
-        const tpl = SCRIPT_TEMPLATES[selTemplate.value];
+        const curPersona = (window.store && window.store.getSelectedPersona) ? window.store.getSelectedPersona() : null;
+        const curName = (curPersona && curPersona.name) || 'Shreya';
+        let tpl = SCRIPT_TEMPLATES[selTemplate.value];
         if (tpl) {
+          tpl = tpl.replace(/\b(Sara|Alex|Shreya|Ritu|Ratan|Manan)\b/g, curName);
           txtPrompt.value = tpl;
           if (charCount) charCount.textContent = `${txtPrompt.value.length} / 2500`;
         }

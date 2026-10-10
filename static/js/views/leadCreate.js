@@ -290,7 +290,7 @@ class LeadCreateModal {
                     id="crmCustomScript" 
                     class="form-input" 
                     rows="2" 
-                    placeholder="Special instructions for AI when calling this customer (e.g. Introduce as Sara from Flowiz. Ask about current lead response times and explore their interest in automated voice agent qualification.)." 
+                    placeholder="Special instructions for AI when calling this customer (e.g. Introduce as Shreya from Flowiz. Ask about current lead response times and explore their interest in automated voice agent qualification.)." 
                     style="font-size: 12.5px; resize: vertical;"
                   ></textarea>
                 </div>
