@@ -53,7 +53,83 @@ class CybernautsState {
     // Active Lead Qualification Call Tracking
     this.activeCall = null;
 
+    // AI Agent Personas (Shreya, Arvind, Meera, Dhruv)
+    this.selectedPersona = 'shreya';
+    this.personas = [
+      {
+        id: 'shreya',
+        name: 'Shreya',
+        gender: 'female',
+        voice: 'shreya',
+        model: 'bulbul:v3',
+        role: 'Friendly Sales & Success',
+        tone: 'Warm & Conversational',
+        accent: 'Natural Hinglish',
+        avatar: '👩',
+        greeting_en: 'Hello, this is Shreya from Flowiz and Cybernauts. How can I help you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Shreya बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?',
+        sample_text: 'Hi, main Flowiz se Shreya bol rahi hoon. Hum aapki sales team ke calls ko automate karne me help karte hain.',
+        audio_sample: '/static/audio/shreya_sample.wav'
+      },
+      {
+        id: 'arvind',
+        name: 'Arvind',
+        gender: 'male',
+        voice: 'aditya',
+        model: 'bulbul:v3',
+        role: 'Enterprise Solutions Consultant',
+        tone: 'Corporate & Confident',
+        accent: 'Corporate Hinglish',
+        avatar: '👨',
+        greeting_en: 'Hello, this is Arvind from Flowiz and Cybernauts. How can I help you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Arvind बोल रहा हूँ। मैं आपकी क्या सहायता कर सकता हूँ?',
+        sample_text: 'Hi, main Flowiz se Arvind bol raha hoon. Hum enterprise businesses ke outbound lead operations ko automate karte hain.',
+        audio_sample: '/static/audio/aditya_sample.wav'
+      },
+      {
+        id: 'meera',
+        name: 'Meera',
+        gender: 'female',
+        voice: 'priya',
+        model: 'bulbul:v3',
+        role: 'Client Onboarding & Operations',
+        tone: 'Calm & Structured',
+        accent: 'Polite English / Hindi',
+        avatar: '👩‍💼',
+        greeting_en: 'Hello, this is Meera from Flowiz and Cybernauts. How may I assist you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Meera बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?',
+        sample_text: 'Hello, main Flowiz se Meera bol rahi hoon. Aapka platform onboarding process smooth aur simple banana hamari priority hai.',
+        audio_sample: '/static/audio/priya_sample.wav'
+      },
+      {
+        id: 'dhruv',
+        name: 'Dhruv',
+        gender: 'male',
+        voice: 'kabir',
+        model: 'bulbul:v3',
+        role: 'Tech Automation & Product Advisor',
+        tone: 'Energetic & Modern',
+        accent: 'Tech Hinglish',
+        avatar: '👨‍💻',
+        greeting_en: 'Hey there, this is Dhruv from Flowiz and Cybernauts. How are you doing today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Dhruv बोल रहा हूँ। आज मैं आपकी क्या सहायता कर सकता हूँ?',
+        sample_text: 'Hey! Main Flowiz se Dhruv bol raha hoon. Real-time voice AI pipelines aur automated qualification hamara core expertise hai.',
+        audio_sample: '/static/audio/kabir_sample.wav'
+      }
+    ];
+
     this.listeners = new Map();
+  }
+
+  setPersona(personaId) {
+    if (!personaId) return;
+    const exists = this.personas.some(p => p.id === personaId);
+    this.selectedPersona = exists ? personaId : 'shreya';
+    this.notify('persona', this.selectedPersona);
+  }
+
+  getSelectedPersona() {
+    return this.personas.find(p => p.id === this.selectedPersona) || this.personas[0];
   }
 
   subscribe(key, callback) {

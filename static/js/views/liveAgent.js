@@ -248,6 +248,8 @@ class LiveAgentView {
       // Reset transcripts for a fresh call
       window.store.clearTranscripts();
 
+      const activePersona = window.store.getSelectedPersona();
+
       window.store.setActiveCall({
         lead_id: resolvedLeadId,
         dispatch_id: dispatchId,
@@ -259,7 +261,10 @@ class LiveAgentView {
         has_call_prompt: Boolean(callPrompt),
         call_prompt_len: callPrompt ? callPrompt.length : 0,
         call_status: 'initiating',
-        is_recorded: Boolean(this.isTelephonyRecordEnabled)
+        is_recorded: Boolean(this.isTelephonyRecordEnabled),
+        persona: activePersona.id,
+        persona_name: activePersona.name,
+        persona_voice: activePersona.voice
       });
 
       this.startCallTimer();
@@ -282,7 +287,9 @@ class LiveAgentView {
         session_id: sessionId,
         dispatch_id: dispatchId,
         call_prompt: callPrompt || undefined,
-        record_call: Boolean(this.isTelephonyRecordEnabled)
+        record_call: Boolean(this.isTelephonyRecordEnabled),
+        persona: activePersona.id,
+        voice: activePersona.voice
       };
 
       const res = await window.api.triggerOutboundCall(phone, payload);
@@ -315,6 +322,10 @@ class LiveAgentView {
     const latencyVal = voiceState.latencyMs ? `${voiceState.latencyMs}ms` : '—';
     const langVal = voiceState.language || 'English / Hindi';
 
+    const selectedPersona = (window.store && window.store.getSelectedPersona) ? window.store.getSelectedPersona() : { id: 'shreya', name: 'Shreya', gender: 'female', voice: 'shreya' };
+    const personas = (window.store && window.store.personas) ? window.store.personas : [];
+    const isCallActive = Boolean((activeCall && !['completed', 'failed', 'busy', 'no-answer'].includes(activeCall.call_status)) || this.isLiveKitConnected || this.isLiveKitConnecting);
+
     container.innerHTML = `
       <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px;">
         <div>
@@ -339,6 +350,44 @@ class LiveAgentView {
           <button class="segmented-tab ${this.activeMode === 'livekit' ? 'active' : ''}" id="tabModeLiveKit">
             <i class="fa-solid fa-microphone-lines"></i>
             <span>LiveKit WebRTC (Browser)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Compact AI Voice & Persona Selector -->
+      <div class="card" style="margin-bottom: 20px; padding: 14px 20px; border: 1px solid var(--border-color); background: var(--bg-card); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div style="width: 40px; height: 40px; border-radius: 8px; background: #6b21a8; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px;">
+            <i class="fa-solid fa-microphone-lines"></i>
+          </div>
+          <div>
+            <div style="font-weight: 800; font-size: 14.5px; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+              <span>AI Agent Voice & Persona</span>
+              <span class="badge" style="background: #faf5ff; color: #6b21a8; border: 1px solid #d8b4fe; font-size: 10.5px; font-weight: 700;">Sarvam Bulbul v3</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+              Choose which voice speaks during calls and WebRTC sessions.
+            </div>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <label for="selectVoicePersona" style="font-size: 12.5px; font-weight: 700; color: var(--text-secondary); white-space: nowrap;">
+              Select Voice:
+            </label>
+            <select id="selectVoicePersona" class="form-control" ${isCallActive ? 'disabled' : ''} style="font-size: 13px; font-weight: 600; padding: 7px 12px; border-radius: 6px; border: 1.5px solid #6b21a8; background: #ffffff; cursor: pointer; color: var(--text-primary); min-width: 280px;">
+              ${personas.map(p => `
+                <option value="${p.id}" ${p.id === selectedPersona.id ? 'selected' : ''}>
+                  ${p.avatar || (p.gender === 'female' ? '👩' : '👨')} ${p.name} (${p.gender === 'female' ? 'Female' : 'Male'} - ${p.tone})
+                </option>
+              `).join('')}
+            </select>
+          </div>
+
+          <button type="button" class="btn" id="btnTestSelectedVoice" style="background: #ffffff; border: 1.5px solid #6b21a8; color: #6b21a8; font-size: 12.5px; font-weight: 700; padding: 7px 14px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(107, 33, 168, 0.1);" title="Listen to real Sarvam voice sample">
+            <i class="fa-solid fa-volume-high"></i>
+            <span id="btnTestVoiceLabel">Test Voice</span>
           </button>
         </div>
       </div>
@@ -582,7 +631,7 @@ class LiveAgentView {
                 <div class="text-muted" style="font-size: 13px; margin-top: 2px;">
                   ${this.isLiveKitConnected 
                     ? 'Microphone active (Camera OFF). Speak naturally; the AI Agent will respond in real time.' 
-                    : 'Connect your microphone and speak directly with Sara AI in English & Hindi with zero latency.'}
+                    : `Connect your microphone and speak directly with ${selectedPersona.name} AI in English & Hindi with zero latency.`}
                 </div>
               </div>
             </div>
@@ -713,6 +762,36 @@ class LiveAgentView {
       tabLiveKit.addEventListener('click', () => {
         this.activeMode = 'livekit';
         this.render(container);
+      });
+    }
+
+    // Voice Persona Dropdown Selection
+    const voiceSelect = container.querySelector('#selectVoicePersona');
+    if (voiceSelect) {
+      voiceSelect.addEventListener('change', (e) => {
+        const isCallActive = Boolean((window.store.activeCall && !['completed', 'failed', 'busy', 'no-answer'].includes(window.store.activeCall.call_status)) || this.isLiveKitConnected || this.isLiveKitConnecting);
+        if (isCallActive) {
+          if (window.toast) window.toast.warning('Voice persona is locked while a call is active.');
+          return;
+        }
+
+        const newId = e.target.value;
+        if (newId && window.store.setPersona) {
+          window.store.setPersona(newId);
+          this.render(container);
+          if (window.toast) window.toast.success(`Voice set to ${window.store.getSelectedPersona().name}`);
+        }
+      });
+    }
+
+    // Test Selected Voice Button (plays real Sarvam AI audio)
+    const btnTestVoice = container.querySelector('#btnTestSelectedVoice');
+    if (btnTestVoice) {
+      btnTestVoice.addEventListener('click', () => {
+        const activeP = window.store.getSelectedPersona();
+        if (activeP) {
+          this.playVoicePreview(activeP, btnTestVoice);
+        }
       });
     }
 
@@ -1071,13 +1150,49 @@ class LiveAgentView {
     });
   }
 
+  playVoicePreview(persona, btnElement) {
+    if (!persona) return;
+    const labelSpan = btnElement ? (btnElement.querySelector('#btnTestVoiceLabel') || btnElement) : null;
+    const originalHtml = labelSpan ? labelSpan.innerHTML : null;
+    if (labelSpan) {
+      labelSpan.innerHTML = '<i class="fa-solid fa-spinner fa-spin" style="margin-right: 4px;"></i>Playing...';
+      if (btnElement) btnElement.disabled = true;
+    }
+
+    const resetBtn = () => {
+      if (labelSpan && originalHtml) {
+        labelSpan.innerHTML = originalHtml;
+        if (btnElement) btnElement.disabled = false;
+      }
+    };
+
+    // Play authentic Sarvam AI Bulbul audio sample
+    const samplePath = persona.audio_sample || `/static/audio/${persona.voice || persona.id}_sample.wav`;
+    const audio = new Audio(samplePath);
+    audio.onended = resetBtn;
+    audio.onerror = (e) => {
+      console.warn("Direct Sarvam WAV preview error:", e);
+      resetBtn();
+    };
+
+    audio.play().catch(err => {
+      console.warn("Autoplay notice on audio preview:", err);
+      resetBtn();
+    });
+  }
+
   async connectLiveKit(container) {
     if (this.isLiveKitConnected || this.isLiveKitConnecting) return;
     this.isLiveKitConnecting = true;
     this.render(container);
 
+    const activePersona = (window.store && window.store.getSelectedPersona) ? window.store.getSelectedPersona() : { id: 'shreya', voice: 'shreya', name: 'Shreya' };
+
     try {
-      const res = await window.api.joinLiveKit();
+      const res = await window.api.joinLiveKit({
+        persona: activePersona.id,
+        voice: activePersona.voice
+      });
       if (!res || !res.token || !res.roomUrl) {
         throw new Error(res?.detail || 'Could not retrieve LiveKit credentials from server.');
       }
@@ -1154,7 +1269,7 @@ class LiveAgentView {
         statusMessage: 'LiveKit session connected. Microphone active (Camera OFF). Start speaking!'
       });
 
-      window.store.addTranscript('system', 'LiveKit WebRTC audio session connected. Sara AI is listening.');
+      window.store.addTranscript('system', `LiveKit WebRTC audio session connected. ${activePersona.name} AI is listening.`);
 
       // Auto-start recording if enabled
       if (this.recordAutoLiveKit) {

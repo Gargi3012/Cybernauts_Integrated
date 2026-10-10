@@ -393,7 +393,14 @@ class LeadDetailView {
       }
 
       const identifier = lead.domain || lead.website || lead.id;
-      const dispatchPayload = { phoneNumber: phone, force: true, ...promptData };
+      const activePersona = (window.store && window.store.getSelectedPersona) ? window.store.getSelectedPersona() : null;
+      const dispatchPayload = { 
+        phoneNumber: phone, 
+        force: true, 
+        persona: activePersona ? activePersona.id : undefined,
+        voice: activePersona ? activePersona.voice : undefined,
+        ...promptData 
+      };
       const res = await window.api.dispatchLeadQualification(identifier, dispatchPayload);
 
       if (res && (res.status === 'success' || res.status === 'in_progress')) {

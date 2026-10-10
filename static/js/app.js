@@ -402,6 +402,14 @@ class CybernautsApp {
         window.store.setCategories(catsRes.categories);
       }
 
+      // Fetch personas from server to keep registry synchronized
+      try {
+        const personasRes = await window.api.getPersonas();
+        if (personasRes && personasRes.personas && personasRes.personas.length > 0) {
+          window.store.personas = personasRes.personas;
+        }
+      } catch (_) {}
+
       this.updateRecordingCount();
     } catch (err) {
       console.warn("Initial data load notice:", err);

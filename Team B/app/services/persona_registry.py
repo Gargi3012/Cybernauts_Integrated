@@ -144,3 +144,22 @@ def get_persona(persona_id_or_voice: Optional[str] = None) -> Persona:
 def list_personas() -> List[Dict[str, Any]]:
     """Return all available personas as a JSON-serializable list."""
     return [p.to_dict() for p in CANONICAL_PERSONAS.values()]
+
+
+def get_all_personas() -> List[Persona]:
+    """Return all available Persona objects."""
+    return list(CANONICAL_PERSONAS.values())
+
+
+def resolve_persona_voice(persona_id: Optional[str] = None, custom_voice: Optional[str] = None) -> str:
+    """Resolve the final Sarvam voice identifier."""
+    if custom_voice and custom_voice.strip():
+        return custom_voice.strip().lower()
+    persona = get_persona(persona_id)
+    return persona.voice
+
+
+# Aliases
+PERSONAS = CANONICAL_PERSONAS
+AgentPersona = Persona
+

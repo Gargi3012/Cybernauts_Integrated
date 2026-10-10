@@ -129,7 +129,7 @@ const api = {
     });
   },
 
-  async joinLiveKit() {
+  async joinLiveKit(extra = {}) {
     let token = localStorage.getItem("jwt_token");
     if (!token) {
       try {
@@ -139,7 +139,19 @@ const api = {
         console.warn("Auto-login notice for LiveKit:", e);
       }
     }
-    return fetchJSON("/api/livekit/join", { method: "POST" });
+    return fetchJSON("/api/livekit/join", { 
+      method: "POST",
+      body: extra 
+    });
+  },
+
+  async getPersonas() {
+    try {
+      return await fetchJSON("/api/personas");
+    } catch (e) {
+      console.warn("Notice: could not fetch remote personas:", e);
+      return null;
+    }
   },
 
   async triggerOutboundCall(phoneNumber, extra = {}) {

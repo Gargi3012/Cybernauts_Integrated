@@ -722,6 +722,10 @@ async def dispatch_lead_call(
             logger.warning(f"[CALL_PROMPT_REJECTED] Call prompt rejected for lead {lead.domain}: {p_err}")
             raise HTTPException(status_code=422, detail=f"Invalid call_prompt: {p_err}")
 
+    # Persona & Voice handling
+    persona_val = payload.get("persona") if (payload and isinstance(payload, dict)) else None
+    voice_val = payload.get("voice") if (payload and isinstance(payload, dict)) else None
+
     # Invoke Team B's Plivo outbound calling layer
     try:
         from Pillar_2.outbound_call import place_outbound_call
@@ -732,6 +736,8 @@ async def dispatch_lead_call(
             lead_id=str(lead.domain),
             session_id=session_id,
             dispatch_id=dispatch_id,
+            persona=persona_val,
+            voice=voice_val,
         )
     except Exception as e:
         # Purge ephemeral call config from registry on dispatch failure
