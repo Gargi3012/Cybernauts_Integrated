@@ -114,17 +114,37 @@ class SarvamTTSService(TTSService):
         **kwargs
     ):
         from pipecat.services.settings import TTSSettings
+        raw_v = (voice or "shreya").strip().lower()
+        speaker_map = {
+            "arvind": "aditya",
+            "meera": "priya",
+            "dhruv": "kabir",
+            "sara": "shreya",
+            "default": "shreya"
+        }
+        resolved_voice = speaker_map.get(raw_v, raw_v)
+        valid_sarvam_speakers = {
+            "aditya", "ritu", "ashutosh", "priya", "neha", "rahul", "pooja",
+            "rohan", "simran", "kavya", "amit", "dev", "ishita", "shreya",
+            "ratan", "varun", "manan", "sumit", "roopa", "kabir", "aayan",
+            "shubh", "advait", "anand", "tanya", "tarun", "sunny", "mani",
+            "gokul", "vijay", "shruti", "suhani", "mohit", "kavitha", "rehan",
+            "soham", "rupali"
+        }
+        if resolved_voice not in valid_sarvam_speakers:
+            resolved_voice = "shreya"
+
         super().__init__(
             sample_rate=sample_rate,
             settings=TTSSettings(
                 model=model,
-                voice=voice.lower(),
+                voice=resolved_voice,
                 language=target_language_code,
             ),
             **kwargs
         )
         self.api_key = api_key
-        self.voice = voice.lower()
+        self.voice = resolved_voice
         self.model = model
         self.target_language_code = target_language_code
         self.url = "https://api.sarvam.ai/text-to-speech"

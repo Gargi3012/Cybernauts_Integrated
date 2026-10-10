@@ -151,12 +151,23 @@ def get_all_personas() -> List[Persona]:
     return list(CANONICAL_PERSONAS.values())
 
 
+SARVAM_VOICE_MAP: Dict[str, str] = {
+    "arvind": "aditya",
+    "meera": "priya",
+    "dhruv": "kabir",
+    "shreya": "shreya",
+    "sara": "shreya",
+}
+
+
 def resolve_persona_voice(persona_id: Optional[str] = None, custom_voice: Optional[str] = None) -> str:
     """Resolve the final Sarvam voice identifier."""
     if custom_voice and custom_voice.strip():
-        return custom_voice.strip().lower()
+        v = custom_voice.strip().lower()
+        return SARVAM_VOICE_MAP.get(v, v)
     persona = get_persona(persona_id)
-    return persona.voice
+    v = persona.voice.lower()
+    return SARVAM_VOICE_MAP.get(v, v)
 
 
 # Aliases

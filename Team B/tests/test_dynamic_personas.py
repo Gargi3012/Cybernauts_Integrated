@@ -70,11 +70,11 @@ def test_fallback_persona_resolution():
     unknown_p = get_persona("unknown_agent_xyz")
     assert unknown_p.id == "shreya"
 
-    # resolve_persona_voice
-    assert resolve_persona_voice("arvind") == "arvind"
+    # resolve_persona_voice (maps to official Sarvam voices)
+    assert resolve_persona_voice("arvind") == "aditya"
     assert resolve_persona_voice("shreya") == "shreya"
-    assert resolve_persona_voice(None, custom_voice="meera") == "meera"
-    assert resolve_persona_voice("arvind", custom_voice="dhruv") == "dhruv"
+    assert resolve_persona_voice(None, custom_voice="meera") == "priya"
+    assert resolve_persona_voice("arvind", custom_voice="dhruv") == "kabir"
 
 
 def test_arvind_male_prompt_generation():
