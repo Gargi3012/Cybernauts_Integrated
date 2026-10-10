@@ -71,6 +71,8 @@ def place_outbound_call(
         query_params["persona"] = str(persona)
     if voice:
         query_params["voice"] = str(voice)
+    if record_call:
+        query_params["record_call"] = "true"
 
     if query_params:
         webhook_url += f"?{urllib.parse.urlencode(query_params)}"
@@ -90,16 +92,6 @@ def place_outbound_call(
         "hangup_url": hangup_url,
         "hangup_method": "POST",
     }
-
-    if record_call:
-        recording_callback = f"{public_base_url.rstrip('/')}/api/telephony/recording-callback"
-        if query_params:
-            recording_callback += f"?{urllib.parse.urlencode(query_params)}"
-        call_kwargs["record"] = True
-        call_kwargs["record_callback_url"] = recording_callback
-        call_kwargs["record_callback_method"] = "POST"
-        call_kwargs["record_file_format"] = "mp3"
-        logger.info(f"Plivo Carrier Recording enabled. Callback URL: {recording_callback}")
 
     response = client.calls.create(**call_kwargs)
 

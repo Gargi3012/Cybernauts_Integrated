@@ -8,14 +8,14 @@ load_dotenv(override=False)
 
 
 def place_plivo_outbound_call(to_number: str, company_context: str | None = None) -> str:
-    server_base_url = (os.getenv("SERVER_BASE_URL") or os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
+    server_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL", "")).rstrip("/")
     plivo_auth_id = os.getenv("PLIVO_AUTH_ID", "")
     plivo_auth_token = os.getenv("PLIVO_AUTH_TOKEN", "")
     plivo_phone_number = os.getenv("PLIVO_PHONE_NUMBER", "")
 
     if not server_base_url:
         raise ValueError(
-            "SERVER_BASE_URL is empty in .env — set it to your current public URL first "
+            "PUBLIC_BASE_URL is empty in .env — set it to your current public URL first "
             "(e.g. https://xxxx.ngrok-free.app)."
         )
     if not plivo_auth_id or not plivo_auth_token:
@@ -26,7 +26,7 @@ def place_plivo_outbound_call(to_number: str, company_context: str | None = None
     client = plivo.RestClient(auth_id=plivo_auth_id, auth_token=plivo_auth_token)
 
     # Webhook URL pointing to our Plivo answer endpoint
-    answer_url = f"{server_base_url}/plivo/inbound-call"
+    answer_url = f"{server_base_url}/inbound-call"
     if company_context:
         answer_url += f"?company_context={urllib.parse.quote(company_context)}"
 
