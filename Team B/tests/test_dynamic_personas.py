@@ -20,94 +20,103 @@ from app.main import app
 
 
 def test_persona_registry_contents():
-    """Verify canonical personas exist and adhere to spec."""
+    """Verify canonical personas exist: Shreya (F), Ritu (F), Ratan (M), Manan (M)."""
     all_p = get_all_personas()
     assert len(all_p) == 4
     
     ids = [p.id for p in all_p]
     assert "shreya" in ids
-    assert "arvind" in ids
-    assert "meera" in ids
-    assert "dhruv" in ids
-
-    # Arvind (Male)
-    arvind = get_persona("arvind")
-    assert arvind.name == "Arvind"
-    assert arvind.gender == "male"
-    assert arvind.voice == "arvind"
-    assert arvind.model == "bulbul:v3"
-    assert "बोल रहा हूँ" in arvind.greeting_hi
-    assert "Arvind" in arvind.greeting_en
+    assert "ritu" in ids
+    assert "ratan" in ids
+    assert "manan" in ids
 
     # Shreya (Female)
     shreya = get_persona("shreya")
     assert shreya.name == "Shreya"
     assert shreya.gender == "female"
     assert shreya.voice == "shreya"
+    assert shreya.model == "bulbul:v3"
     assert "बोल रही हूँ" in shreya.greeting_hi
     assert "Shreya" in shreya.greeting_en
 
-    # Meera (Female)
-    meera = get_persona("meera")
-    assert meera.name == "Meera"
-    assert meera.gender == "female"
-    assert meera.voice == "meera"
-    assert "बोल रही हूँ" in meera.greeting_hi
+    # Ritu (Female)
+    ritu = get_persona("ritu")
+    assert ritu.name == "Ritu"
+    assert ritu.gender == "female"
+    assert ritu.voice == "ritu"
+    assert "बोल रही हूँ" in ritu.greeting_hi
+    assert "Ritu" in ritu.greeting_en
 
-    # Dhruv (Male)
-    dhruv = get_persona("dhruv")
-    assert dhruv.name == "Dhruv"
-    assert dhruv.gender == "male"
-    assert dhruv.voice == "dhruv"
-    assert "बोल रहा हूँ" in dhruv.greeting_hi
+    # Ratan (Male)
+    ratan = get_persona("ratan")
+    assert ratan.name == "Ratan"
+    assert ratan.gender == "male"
+    assert ratan.voice == "ratan"
+    assert "बोल रहा हूँ" in ratan.greeting_hi
+    assert "Ratan" in ratan.greeting_en
+
+    # Manan (Male)
+    manan = get_persona("manan")
+    assert manan.name == "Manan"
+    assert manan.gender == "male"
+    assert manan.voice == "manan"
+    assert "बोल रहा हूँ" in manan.greeting_hi
+    assert "Manan" in manan.greeting_en
 
 
-def test_fallback_persona_resolution():
-    """Verify unknown or None resolves safely to default persona."""
+def test_fallback_and_alias_resolution():
+    """Verify unknown, None, and legacy aliases resolve safely."""
     default_p = get_persona(None)
     assert default_p.id == "shreya"
     
     unknown_p = get_persona("unknown_agent_xyz")
     assert unknown_p.id == "shreya"
 
-    # resolve_persona_voice (maps to official Sarvam voices)
-    assert resolve_persona_voice("arvind") == "aditya"
+    # Backward compatibility aliases
+    assert get_persona("arvind").id == "ratan"
+    assert get_persona("meera").id == "ritu"
+    assert get_persona("dhruv").id == "manan"
+    assert get_persona("sara").id == "shreya"
+
+    # resolve_persona_voice
     assert resolve_persona_voice("shreya") == "shreya"
-    assert resolve_persona_voice(None, custom_voice="meera") == "priya"
-    assert resolve_persona_voice("arvind", custom_voice="dhruv") == "kabir"
+    assert resolve_persona_voice("ritu") == "ritu"
+    assert resolve_persona_voice("ratan") == "ratan"
+    assert resolve_persona_voice("manan") == "manan"
+    assert resolve_persona_voice("arvind") == "ratan"
+    assert resolve_persona_voice("meera") == "ritu"
+    assert resolve_persona_voice("dhruv") == "manan"
 
 
-def test_arvind_male_prompt_generation():
-    """Verify Arvind prompt enforces male grammar and bans Sara identity."""
-    prompt = build_voice_system_prompt("arvind")
-    assert "Your name is Arvind" in prompt
-    assert "बोल रहा हूँ" in prompt
-    assert "कर सकता हूँ" in prompt
-    # Strict rule: Male grammar must ban feminine verb endings
-    assert "GENDER GRAMMAR RULE (MALE)" in prompt
-    assert "NEVER use feminine verb endings (रही हूँ, सकती हूँ, जानती हूँ)" in prompt
-    # Verify natural modern Hinglish instructions
-    assert "NATURAL MODERN HINGLISH" in prompt
-    assert "'leads', 'calls', 'features'" in prompt
-    # Verify pure textbook Hindi ban
-    assert "स्वचालन" in prompt
-    assert "दूरभाष" in prompt
-    assert "प्रतिपुष्टि" in prompt
+def test_ratan_and_manan_male_prompt_generation():
+    """Verify Ratan & Manan prompts enforce male grammar and self-name introduction."""
+    for p_id, p_name in [("ratan", "Ratan"), ("manan", "Manan")]:
+        prompt = build_voice_system_prompt(p_id)
+        assert f"Your name is {p_name}" in prompt
+        assert f"I'm {p_name} from Flowiz" in prompt
+        assert f"मैं {p_name} बोल रहा हूँ" in prompt
+        assert "कर सकता हूँ" in prompt
+        assert "GENDER GRAMMAR RULE (MALE)" in prompt
+        assert "NEVER use feminine verb endings (रही हूँ, सकती हूँ, जानती हूँ)" in prompt
+        assert "NATURAL MODERN HINGLISH" in prompt
+        assert "'leads', 'calls', 'features'" in prompt
 
 
-def test_shreya_female_prompt_generation():
-    """Verify Shreya prompt enforces female grammar."""
-    prompt = build_voice_system_prompt("shreya")
-    assert "Your name is Shreya" in prompt
-    assert "बोल रही हूँ" in prompt
-    assert "कर सकती हूँ" in prompt
-    assert "GENDER GRAMMAR RULE (FEMALE)" in prompt
-    assert "NEVER use masculine verb endings (रहा हूँ, सकता हूँ, जानता हूँ)" in prompt
-    assert "NATURAL MODERN HINGLISH" in prompt
+def test_shreya_and_ritu_female_prompt_generation():
+    """Verify Shreya & Ritu prompts enforce female grammar and self-name introduction."""
+    for p_id, p_name in [("shreya", "Shreya"), ("ritu", "Ritu")]:
+        prompt = build_voice_system_prompt(p_id)
+        assert f"Your name is {p_name}" in prompt
+        assert f"I'm {p_name} from Flowiz" in prompt
+        assert f"मैं {p_name} बोल रही हूँ" in prompt
+        assert "कर सकती हूँ" in prompt
+        assert "GENDER GRAMMAR RULE (FEMALE)" in prompt
+        assert "NEVER use masculine verb endings (रहा हूँ, सकता हूँ, जानता हूँ)" in prompt
+        assert "NATURAL MODERN HINGLISH" in prompt
 
 
 def test_api_personas_endpoint():
-    """Verify GET /api/personas returns all personas with expected JSON schema."""
+    """Verify GET /api/personas returns Shreya, Ritu, Ratan, Manan."""
     client = TestClient(app)
     response = client.get("/api/personas")
     assert response.status_code == 200
@@ -115,11 +124,17 @@ def test_api_personas_endpoint():
     assert "personas" in data
     assert len(data["personas"]) == 4
 
-    arvind_data = next((p for p in data["personas"] if p["id"] == "arvind"), None)
-    assert arvind_data is not None
-    assert arvind_data["gender"] == "male"
-    assert arvind_data["voice"] == "arvind"
-    assert arvind_data["name"] == "Arvind"
+    p_ids = [p["id"] for p in data["personas"]]
+    assert "shreya" in p_ids
+    assert "ritu" in p_ids
+    assert "ratan" in p_ids
+    assert "manan" in p_ids
+
+    ratan_data = next((p for p in data["personas"] if p["id"] == "ratan"), None)
+    assert ratan_data is not None
+    assert ratan_data["gender"] == "male"
+    assert ratan_data["voice"] == "ratan"
+    assert ratan_data["name"] == "Ratan"
 
 
 def test_api_livekit_join_with_persona():
@@ -131,9 +146,7 @@ def test_api_livekit_join_with_persona():
 
     join_resp = client.post(
         "/api/livekit/join",
-        json={"persona": "arvind", "voice": "arvind"},
+        json={"persona": "ratan", "voice": "ratan"},
         headers=headers
     )
-    # May return 200 or 503 if LiveKit cloud not configured in test env, but endpoint processes persona cleanly
     assert join_resp.status_code in (200, 500, 503)
-

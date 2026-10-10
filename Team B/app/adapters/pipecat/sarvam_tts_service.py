@@ -116,9 +116,13 @@ class SarvamTTSService(TTSService):
         from pipecat.services.settings import TTSSettings
         raw_v = (voice or "shreya").strip().lower()
         speaker_map = {
-            "arvind": "aditya",
-            "meera": "priya",
-            "dhruv": "kabir",
+            "shreya": "shreya",
+            "ritu": "ritu",
+            "ratan": "ratan",
+            "manan": "manan",
+            "arvind": "ratan",
+            "meera": "ritu",
+            "dhruv": "manan",
             "sara": "shreya",
             "default": "shreya"
         }

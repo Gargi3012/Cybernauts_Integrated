@@ -53,7 +53,7 @@ class CybernautsState {
     // Active Lead Qualification Call Tracking
     this.activeCall = null;
 
-    // AI Agent Personas (Shreya, Arvind, Meera, Dhruv)
+    // AI Agent Personas (Shreya, Ritu, Ratan, Manan)
     this.selectedPersona = 'shreya';
     this.personas = [
       {
@@ -72,49 +72,49 @@ class CybernautsState {
         audio_sample: '/static/audio/shreya_sample.wav'
       },
       {
-        id: 'arvind',
-        name: 'Arvind',
-        gender: 'male',
-        voice: 'aditya',
-        model: 'bulbul:v3',
-        role: 'Enterprise Solutions Consultant',
-        tone: 'Corporate & Confident',
-        accent: 'Corporate Hinglish',
-        avatar: '👨',
-        greeting_en: 'Hello, this is Arvind from Flowiz and Cybernauts. How can I help you today?',
-        greeting_hi: 'नमस्ते, मैं Flowiz से Arvind बोल रहा हूँ। मैं आपकी क्या सहायता कर सकता हूँ?',
-        sample_text: 'Hi, main Flowiz se Arvind bol raha hoon. Hum enterprise businesses ke outbound lead operations ko automate karte hain.',
-        audio_sample: '/static/audio/aditya_sample.wav'
-      },
-      {
-        id: 'meera',
-        name: 'Meera',
+        id: 'ritu',
+        name: 'Ritu',
         gender: 'female',
-        voice: 'priya',
+        voice: 'ritu',
         model: 'bulbul:v3',
         role: 'Client Onboarding & Operations',
-        tone: 'Calm & Structured',
+        tone: 'Calm & Supportive',
         accent: 'Polite English / Hindi',
         avatar: '👩‍💼',
-        greeting_en: 'Hello, this is Meera from Flowiz and Cybernauts. How may I assist you today?',
-        greeting_hi: 'नमस्ते, मैं Flowiz से Meera बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?',
-        sample_text: 'Hello, main Flowiz se Meera bol rahi hoon. Aapka platform onboarding process smooth aur simple banana hamari priority hai.',
-        audio_sample: '/static/audio/priya_sample.wav'
+        greeting_en: 'Hello, this is Ritu from Flowiz and Cybernauts. How may I assist you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Ritu बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?',
+        sample_text: 'Hello, main Flowiz se Ritu bol rahi hoon. Aapka platform onboarding process smooth aur simple banana hamari priority hai.',
+        audio_sample: '/static/audio/ritu_sample.wav'
       },
       {
-        id: 'dhruv',
-        name: 'Dhruv',
+        id: 'ratan',
+        name: 'Ratan',
         gender: 'male',
-        voice: 'kabir',
+        voice: 'ratan',
+        model: 'bulbul:v3',
+        role: 'Enterprise Solutions Consultant',
+        tone: 'Corporate & Authoritative',
+        accent: 'Corporate Hinglish',
+        avatar: '👨',
+        greeting_en: 'Hello, this is Ratan from Flowiz and Cybernauts. How can I help you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Ratan बोल रहा हूँ। मैं आपकी क्या सहायता कर सकता हूँ?',
+        sample_text: 'Hi, main Flowiz se Ratan bol raha hoon. Hum enterprise businesses ke outbound lead operations ko automate karte hain.',
+        audio_sample: '/static/audio/ratan_sample.wav'
+      },
+      {
+        id: 'manan',
+        name: 'Manan',
+        gender: 'male',
+        voice: 'manan',
         model: 'bulbul:v3',
         role: 'Tech Automation & Product Advisor',
         tone: 'Energetic & Modern',
         accent: 'Tech Hinglish',
         avatar: '👨‍💻',
-        greeting_en: 'Hey there, this is Dhruv from Flowiz and Cybernauts. How are you doing today?',
-        greeting_hi: 'नमस्ते, मैं Flowiz से Dhruv बोल रहा हूँ। आज मैं आपकी क्या सहायता कर सकता हूँ?',
-        sample_text: 'Hey! Main Flowiz se Dhruv bol raha hoon. Real-time voice AI pipelines aur automated qualification hamara core expertise hai.',
-        audio_sample: '/static/audio/kabir_sample.wav'
+        greeting_en: 'Hey there, this is Manan from Flowiz and Cybernauts. How are you doing today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Manan बोल रहा हूँ। आज मैं आपकी क्या सहायता कर सकता हूँ?',
+        sample_text: 'Hey! Main Flowiz se Manan bol raha hoon. Real-time voice AI pipelines aur automated qualification hamara core expertise hai.',
+        audio_sample: '/static/audio/manan_sample.wav'
       }
     ];
 

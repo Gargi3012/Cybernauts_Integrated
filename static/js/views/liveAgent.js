@@ -228,6 +228,8 @@ class LiveAgentView {
       return;
     }
 
+    this.stopActiveVoicePreview();
+
     const origBtnHtml = triggerBtn ? triggerBtn.innerHTML : null;
     try {
       if (triggerBtn) {
@@ -385,9 +387,9 @@ class LiveAgentView {
             </select>
           </div>
 
-          <button type="button" class="btn" id="btnTestSelectedVoice" style="background: #ffffff; border: 1.5px solid #6b21a8; color: #6b21a8; font-size: 12.5px; font-weight: 700; padding: 7px 14px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(107, 33, 168, 0.1);" title="Listen to real Sarvam voice sample">
-            <i class="fa-solid fa-volume-high"></i>
-            <span id="btnTestVoiceLabel">Test Voice</span>
+          <button type="button" class="btn" id="btnTestSelectedVoice" style="background: ${Boolean(window._activeVoiceAudio && !window._activeVoiceAudio.paused && window._activeVoicePersonaId === selectedPersona.id) ? '#fdf4ff' : '#ffffff'}; border: 1.5px solid ${Boolean(window._activeVoiceAudio && !window._activeVoiceAudio.paused && window._activeVoicePersonaId === selectedPersona.id) ? '#c026d3' : '#6b21a8'}; color: ${Boolean(window._activeVoiceAudio && !window._activeVoiceAudio.paused && window._activeVoicePersonaId === selectedPersona.id) ? '#c026d3' : '#6b21a8'}; font-size: 12.5px; font-weight: 700; padding: 7px 14px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(107, 33, 168, 0.1);" title="${Boolean(window._activeVoiceAudio && !window._activeVoiceAudio.paused && window._activeVoicePersonaId === selectedPersona.id) ? 'Pause audio sample' : 'Listen to real voice sample'}">
+            <i class="fa-solid ${Boolean(window._activeVoiceAudio && !window._activeVoiceAudio.paused && window._activeVoicePersonaId === selectedPersona.id) ? 'fa-pause' : 'fa-volume-high'}"></i>
+            <span id="btnTestVoiceLabel">${Boolean(window._activeVoiceAudio && !window._activeVoiceAudio.paused && window._activeVoicePersonaId === selectedPersona.id) ? 'Pause Audio' : 'Test Voice'}</span>
           </button>
         </div>
       </div>
@@ -749,6 +751,7 @@ class LiveAgentView {
     const tabTelephony = container.querySelector('#tabModeTelephony');
     if (tabTelephony) {
       tabTelephony.addEventListener('click', () => {
+        this.stopActiveVoicePreview();
         if (this.isLiveKitConnected) {
           this.disconnectLiveKit(container);
         }
@@ -760,6 +763,7 @@ class LiveAgentView {
     const tabLiveKit = container.querySelector('#tabModeLiveKit');
     if (tabLiveKit) {
       tabLiveKit.addEventListener('click', () => {
+        this.stopActiveVoicePreview();
         this.activeMode = 'livekit';
         this.render(container);
       });
@@ -775,6 +779,9 @@ class LiveAgentView {
           return;
         }
 
+        // Immediately stop any preview audio when switching personas
+        this.stopActiveVoicePreview();
+
         const newId = e.target.value;
         if (newId && window.store.setPersona) {
           window.store.setPersona(newId);
@@ -784,13 +791,16 @@ class LiveAgentView {
       });
     }
 
-    // Test Selected Voice Button (plays real Sarvam AI audio)
+    // Test Selected Voice Button (plays real Sarvam AI audio with pause & mutual exclusion)
     const btnTestVoice = container.querySelector('#btnTestSelectedVoice');
     if (btnTestVoice) {
+      if (window._activeVoiceAudio && !window._activeVoiceAudio.paused) {
+        window._activeVoiceBtn = btnTestVoice;
+      }
       btnTestVoice.addEventListener('click', () => {
         const activeP = window.store.getSelectedPersona();
         if (activeP) {
-          this.playVoicePreview(activeP, btnTestVoice);
+          this.toggleVoicePreview(activeP, btnTestVoice);
         }
       });
     }
@@ -1150,39 +1160,80 @@ class LiveAgentView {
     });
   }
 
-  playVoicePreview(persona, btnElement) {
+  stopActiveVoicePreview() {
+    if (window._activeVoiceAudio) {
+      try {
+        window._activeVoiceAudio.pause();
+        window._activeVoiceAudio.currentTime = 0;
+      } catch (e) {
+        console.warn('Error stopping preview audio:', e);
+      }
+      window._activeVoiceAudio = null;
+    }
+    if (window._activeVoiceBtn) {
+      this.resetVoicePreviewButton(window._activeVoiceBtn);
+      window._activeVoiceBtn = null;
+    }
+    window._activeVoicePersonaId = null;
+  }
+
+  resetVoicePreviewButton(btn) {
+    if (!btn) return;
+    btn.innerHTML = '<i class="fa-solid fa-volume-high"></i><span id="btnTestVoiceLabel">Test Voice</span>';
+    btn.style.background = '#ffffff';
+    btn.style.borderColor = '#6b21a8';
+    btn.style.color = '#6b21a8';
+  }
+
+  toggleVoicePreview(persona, btnElement) {
     if (!persona) return;
-    const labelSpan = btnElement ? (btnElement.querySelector('#btnTestVoiceLabel') || btnElement) : null;
-    const originalHtml = labelSpan ? labelSpan.innerHTML : null;
-    if (labelSpan) {
-      labelSpan.innerHTML = '<i class="fa-solid fa-spinner fa-spin" style="margin-right: 4px;"></i>Playing...';
-      if (btnElement) btnElement.disabled = true;
+
+    // Requirement: "jb chlri ho audio to usko pause ka b opt do"
+    if (window._activeVoiceAudio && !window._activeVoiceAudio.paused && window._activeVoicePersonaId === persona.id) {
+      this.stopActiveVoicePreview();
+      return;
     }
 
-    const resetBtn = () => {
-      if (labelSpan && originalHtml) {
-        labelSpan.innerHTML = originalHtml;
-        if (btnElement) btnElement.disabled = false;
-      }
-    };
+    // Requirement: "agr kisi n ek bari m ek audio chladi aur sath m hi bina pause kre dusri chladi testing k liye to jo purani chlri h vo stop hoje ek bari m ek hi chle"
+    this.stopActiveVoicePreview();
 
-    // Play authentic Sarvam AI Bulbul audio sample
     const samplePath = persona.audio_sample || `/static/audio/${persona.voice || persona.id}_sample.wav`;
     const audio = new Audio(samplePath);
-    audio.onended = resetBtn;
+
+    window._activeVoiceAudio = audio;
+    window._activeVoicePersonaId = persona.id;
+    window._activeVoiceBtn = btnElement;
+
+    if (btnElement) {
+      btnElement.innerHTML = '<i class="fa-solid fa-pause"></i><span id="btnTestVoiceLabel">Pause Audio</span>';
+      btnElement.style.background = '#fdf4ff';
+      btnElement.style.borderColor = '#c026d3';
+      btnElement.style.color = '#c026d3';
+    }
+
+    audio.onended = () => {
+      this.stopActiveVoicePreview();
+    };
+
     audio.onerror = (e) => {
-      console.warn("Direct Sarvam WAV preview error:", e);
-      resetBtn();
+      console.warn("Direct voice preview audio error:", e);
+      this.stopActiveVoicePreview();
+      if (window.toast) window.toast.warning('Could not play audio sample.');
     };
 
     audio.play().catch(err => {
       console.warn("Autoplay notice on audio preview:", err);
-      resetBtn();
+      this.stopActiveVoicePreview();
     });
+  }
+
+  playVoicePreview(persona, btnElement) {
+    this.toggleVoicePreview(persona, btnElement);
   }
 
   async connectLiveKit(container) {
     if (this.isLiveKitConnected || this.isLiveKitConnecting) return;
+    this.stopActiveVoicePreview();
     this.isLiveKitConnecting = true;
     this.render(container);
 

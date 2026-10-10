@@ -32,7 +32,7 @@ class Persona:
         return asdict(self)
 
 
-# Canonical 4 Personas
+# Canonical 4 Personas: Shreya (F), Ritu (F), Ratan (M), Manan (M)
 CANONICAL_PERSONAS: Dict[str, Persona] = {
     "shreya": Persona(
         id="shreya",
@@ -51,56 +51,56 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         hindi_can_verb="कर सकती हूँ",
         sample_text="Hi, main Flowiz se Shreya bol rahi hoon. Hum aapki sales team ke calls ko automate karne me help karte hain."
     ),
-    "arvind": Persona(
-        id="arvind",
-        name="Arvind",
-        gender="male",
-        voice="arvind",
-        model="bulbul:v3",
-        role="Enterprise Solutions Consultant",
-        tone="Professional, Confident & Authoritative",
-        accent="Corporate Indian English / Hinglish",
-        avatar="👨",
-        greeting_en="Hello, this is Arvind from Flowiz and Cybernauts. How can I help you today?",
-        greeting_hi="नमस्ते, मैं Flowiz से Arvind बोल रहा हूँ। मैं आपकी क्या सहायता कर सकता हूँ?",
-        greeting_hinglish="Hi, main Flowiz se Arvind bol raha hoon. Aaj main aapki kya help kar sakta hoon?",
-        hindi_verb="रहा हूँ",
-        hindi_can_verb="कर सकता हूँ",
-        sample_text="Hi, main Flowiz se Arvind bol raha hoon. Hum enterprise businesses ke outbound lead operations ko automate karte hain."
-    ),
-    "meera": Persona(
-        id="meera",
-        name="Meera",
+    "ritu": Persona(
+        id="ritu",
+        name="Ritu",
         gender="female",
-        voice="meera",
+        voice="ritu",
         model="bulbul:v3",
         role="Client Onboarding & Operations Lead",
         tone="Calm, Clear & Supportive",
         accent="Polite Indian English / Hindi",
         avatar="👩‍💼",
-        greeting_en="Hello, this is Meera from Flowiz and Cybernauts. How may I assist you today?",
-        greeting_hi="नमस्ते, मैं Flowiz से Meera बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?",
-        greeting_hinglish="Hi, main Flowiz se Meera bol rahi hoon. Main aapki query me help kar sakti hoon?",
+        greeting_en="Hello, this is Ritu from Flowiz and Cybernauts. How may I assist you today?",
+        greeting_hi="नमस्ते, मैं Flowiz से Ritu बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?",
+        greeting_hinglish="Hi, main Flowiz se Ritu bol rahi hoon. Aaj main aapki kya help kar sakti hoon?",
         hindi_verb="रही हूँ",
         hindi_can_verb="कर सकती हूँ",
-        sample_text="Hello, main Flowiz se Meera bol rahi hoon. Aapka platform onboarding process smooth aur simple banana hamari priority hai."
+        sample_text="Hello, main Flowiz se Ritu bol rahi hoon. Aapka platform onboarding process smooth aur simple banana hamari priority hai."
     ),
-    "dhruv": Persona(
-        id="dhruv",
-        name="Dhruv",
+    "ratan": Persona(
+        id="ratan",
+        name="Ratan",
         gender="male",
-        voice="dhruv",
+        voice="ratan",
+        model="bulbul:v3",
+        role="Enterprise Solutions Consultant",
+        tone="Professional, Confident & Authoritative",
+        accent="Corporate Indian English / Hinglish",
+        avatar="👨",
+        greeting_en="Hello, this is Ratan from Flowiz and Cybernauts. How can I help you today?",
+        greeting_hi="नमस्ते, मैं Flowiz से Ratan बोल रहा हूँ। मैं आपकी क्या सहायता कर सकता हूँ?",
+        greeting_hinglish="Hi, main Flowiz se Ratan bol raha hoon. Aaj main aapki kya help kar sakta hoon?",
+        hindi_verb="रहा हूँ",
+        hindi_can_verb="कर सकता हूँ",
+        sample_text="Hi, main Flowiz se Ratan bol raha hoon. Hum enterprise businesses ke outbound lead operations ko automate karte hain."
+    ),
+    "manan": Persona(
+        id="manan",
+        name="Manan",
+        gender="male",
+        voice="manan",
         model="bulbul:v3",
         role="Tech Automation & Product Advisor",
         tone="Energetic, Sharp & Modern",
         accent="Modern Indian Tech Hinglish",
         avatar="👨‍💻",
-        greeting_en="Hey there, this is Dhruv from Flowiz and Cybernauts. How are you doing today?",
-        greeting_hi="नमस्ते, मैं Flowiz से Dhruv बोल रहा हूँ। आज मैं आपकी क्या सहायता कर सकता हूँ?",
-        greeting_hinglish="Hi, main Flowiz se Dhruv bol raha hoon. Bataiye, aaj main aapki kya help kar sakta hoon?",
+        greeting_en="Hey there, this is Manan from Flowiz and Cybernauts. How are you doing today?",
+        greeting_hi="नमस्ते, मैं Flowiz से Manan बोल रहा हूँ। आज मैं आपकी क्या सहायता कर सकता हूँ?",
+        greeting_hinglish="Hi, main Flowiz se Manan bol raha hoon. Bataiye, aaj main aapki kya help kar sakta hoon?",
         hindi_verb="रहा हूँ",
         hindi_can_verb="कर सकता हूँ",
-        sample_text="Hey! Main Flowiz se Dhruv bol raha hoon. Real-time voice AI pipelines aur automated qualification hamara core expertise hai."
+        sample_text="Hey! Main Flowiz se Manan bol raha hoon. Real-time voice AI pipelines aur automated qualification hamara core expertise hai."
     ),
 }
 
@@ -109,7 +109,10 @@ PERSONA_ALIASES: Dict[str, str] = {
     "sara": "shreya",
     "default": "shreya",
     "female": "shreya",
-    "male": "arvind",
+    "male": "ratan",
+    "arvind": "ratan",
+    "meera": "ritu",
+    "dhruv": "manan",
 }
 
 
@@ -152,11 +155,14 @@ def get_all_personas() -> List[Persona]:
 
 
 SARVAM_VOICE_MAP: Dict[str, str] = {
-    "arvind": "aditya",
-    "meera": "priya",
-    "dhruv": "kabir",
     "shreya": "shreya",
+    "ritu": "ritu",
+    "ratan": "ratan",
+    "manan": "manan",
     "sara": "shreya",
+    "arvind": "ratan",
+    "meera": "ritu",
+    "dhruv": "manan",
 }
 
 
