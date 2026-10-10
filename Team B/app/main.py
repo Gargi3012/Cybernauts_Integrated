@@ -384,9 +384,16 @@ async def handle_plivo_inbound_call(request: Request):
             plivo_params.append(f"company_context={urllib.parse.quote(company_context_raw)}")
         stream_url = f"{stream_base}/ws/plivo?{'&amp;'.join(plivo_params)}"
 
+    record_call = form_dict.get("record_call") == "true" or request.query_params.get("record_call") == "true"
+    record_xml = ""
+    if record_call:
+        public_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL", "")).rstrip("/")
+        rec_callback = f"{public_url}/api/telephony/recording-callback"
+        record_xml = f'    <Record action="{rec_callback}" method="POST" fileFormat="mp3" redirect="false" />\n'
+
     plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000" extraHeaders="{extra_headers}">
+{record_xml}    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000" extraHeaders="{extra_headers}">
         {stream_url}
     </Stream>
 </Response>

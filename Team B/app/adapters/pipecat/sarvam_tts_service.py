@@ -226,7 +226,24 @@ class SarvamTTSService(TTSService):
                 async with session.post(self.url, headers=headers, json=payload, timeout=15) as resp:
                     if resp.status != 200:
                         err_body = await resp.text()
-                        logger.error(f"Sarvam AI TTS API error {resp.status}: {err_body}")
+                        logger.warning(f"Sarvam AI TTS API status {resp.status}: {err_body[:100]}. Triggering high-quality fallback TTS...")
+                        try:
+                            import os
+                            openai_key = os.getenv("OPENAI_API_KEY")
+                            if openai_key:
+                                from openai import AsyncOpenAI
+                                oai_client = AsyncOpenAI(api_key=openai_key)
+                                oai_voice_map = {"shreya": "nova", "ritu": "shimmer", "ratan": "onyx", "manan": "echo"}
+                                oai_voice = oai_voice_map.get(self.voice.lower(), "nova" if self.voice in ("shreya", "ritu") else "onyx")
+                                oai_resp = await oai_client.audio.speech.create(
+                                    model="tts-1",
+                                    voice=oai_voice,
+                                    response_format="wav",
+                                    input=clause_text
+                                )
+                                return oai_resp.content
+                        except Exception as fb_err:
+                            logger.error(f"Fallback TTS failed: {fb_err}")
                         return None
                     data = await resp.json()
                     audios = data.get("audios", [])
