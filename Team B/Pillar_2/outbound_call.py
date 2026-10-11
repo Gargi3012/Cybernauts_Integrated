@@ -97,6 +97,25 @@ def place_outbound_call(
 
     call_id = getattr(response, "request_uuid", None) or getattr(response, "call_uuid", None) or str(response)
     logger.info(f"Plivo outbound call initiated successfully. Call ID: {call_id}")
+
+    # Proactively pre-warm greeting audio while telecom carrier connects and rings
+    try:
+        import asyncio
+        from app.adapters.pipecat.sarvam_tts_service import prewarm_tts_audio
+        from app.services.persona_registry import get_persona, resolve_opening_greeting
+        p_obj = get_persona(persona or "shreya")
+        greet = resolve_opening_greeting(
+            persona_id_or_voice=persona,
+            company_context=company_context,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(prewarm_tts_audio(greet, voice=p_obj.voice, sample_rate=8000))
+        except RuntimeError:
+            pass
+    except Exception as pw_err:
+        logger.debug(f"Outbound prewarm notice: {pw_err}")
+
     return str(call_id)
 
 

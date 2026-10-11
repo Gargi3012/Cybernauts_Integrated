@@ -246,6 +246,22 @@ async def trigger_outbound_call(payload: dict):
                     dispatch_id=dispatch_id,
                     record_call=record_call,
                 )
+
+            # Proactively pre-warm opening greeting TTS audio in background while carrier rings
+            try:
+                from app.adapters.pipecat.sarvam_tts_service import prewarm_tts_audio
+                from app.services.persona_registry import get_persona, resolve_opening_greeting
+                p_active = get_persona(persona or "shreya")
+                call_p_str = prompt_config.call_prompt if prompt_config else None
+                greet_text = resolve_opening_greeting(
+                    persona_id_or_voice=persona,
+                    company_context=company_context,
+                    call_prompt=call_p_str,
+                )
+                asyncio.create_task(prewarm_tts_audio(greet_text, voice=p_active.voice, sample_rate=8000))
+            except Exception as pw_err:
+                logger.debug(f"Pre-warm greeting notice: {pw_err}")
+
             return {
                 "status": "success",
                 "callSid": call_id,
