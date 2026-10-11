@@ -176,6 +176,60 @@ def resolve_persona_voice(persona_id: Optional[str] = None, custom_voice: Option
     return SARVAM_VOICE_MAP.get(v, v)
 
 
+def resolve_opening_greeting(
+    persona_id_or_voice: Optional[str] = None,
+    company_context: Optional[Any] = None,
+    call_prompt: Optional[str] = None,
+    previous_summary: Optional[str] = None,
+) -> str:
+    """Return the exact, deterministic opening greeting for a call session.
+    
+    Used consistently across pre-warming tasks and runtime adapter greeting frames
+    to guarantee 100% cache hits and sub-millisecond audio delivery.
+    """
+    import json
+    import re
+
+    persona = get_persona(persona_id_or_voice)
+    p_name = persona.name
+
+    c_dict: Dict[str, Any] = {}
+    if isinstance(company_context, dict):
+        c_dict = company_context
+    elif isinstance(company_context, str) and company_context.strip():
+        try:
+            c_dict = json.loads(company_context)
+        except Exception:
+            c_dict = {"company_name": company_context.strip()}
+
+    c_name = str(c_dict.get("company_name") or "").strip()
+    contact = str(c_dict.get("contact_name") or "").strip()
+
+    # 1. Custom call prompt specified
+    if call_prompt and call_prompt.strip():
+        cfg_p = call_prompt.strip()
+        m = re.search(r'["\'](Hi\b[^"\']+|Hello\b[^"\']+|Hey\b[^"\']+)', cfg_p, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+
+    # 2. Outbound company context specified
+    if contact and c_name:
+        return f"Hi {contact}! This is {p_name} from Flowiz and Cybernauts. I'm reaching out regarding {c_name}—do you have a quick moment to speak?"
+    if contact:
+        return f"Hi {contact}! This is {p_name} from Flowiz and Cybernauts. Do you have a brief moment to speak?"
+    if c_name and c_name.lower() not in ("manual telecom call", "there", "unknown"):
+        return f"Hello! This is {p_name} from Flowiz and Cybernauts. I'm reaching out regarding {c_name}—do you have a quick moment to speak?"
+    if c_dict:
+        return f"Hello! This is {p_name} from Flowiz and Cybernauts. Do you have a brief moment to speak about automating your operations?"
+
+    # 3. Returning customer summary
+    if previous_summary and previous_summary.strip():
+        return f"Welcome back! This is {p_name} from Flowiz and Cybernauts. How may I assist you today?"
+
+    # 4. Inbound / General fallback
+    return persona.greeting_en
+
+
 # Aliases
 PERSONAS = CANONICAL_PERSONAS
 AgentPersona = Persona

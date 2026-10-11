@@ -27,6 +27,9 @@ _SARVAM_QUOTA_EXHAUSTED: bool = False
 _SARVAM_LAST_ERROR_TIME: float = 0.0
 _LAST_SEEN_KEY: str = ""
 
+# In-memory fast audio cache for zero-lag greeting and phrase delivery
+_TTS_AUDIO_CACHE: dict[str, tuple[bytes, int, int]] = {}
+
 # Canonical Microsoft Edge Neural Indian Voice Mappings
 EDGE_NEURAL_VOICE_MAP = {
     "shreya": "hi-IN-SwaraNeural",       # Natural, expressive, warm Hindi female voice
@@ -52,6 +55,106 @@ def get_edge_neural_voice(voice_id: str) -> str:
     """Resolve an Indian Neural voice for the specified persona."""
     clean_id = (voice_id or "shreya").strip().lower()
     return EDGE_NEURAL_VOICE_MAP.get(clean_id, "hi-IN-SwaraNeural")
+
+
+async def prewarm_tts_audio(
+    text: str,
+    voice: str = "shreya",
+    model: str = "bulbul:v3",
+    sample_rate: int = 8000,
+    target_language_code: str = "hi-IN",
+    api_key: Optional[str] = None
+) -> bool:
+    """
+    Pre-synthesizes audio in background while call is ringing and caches in
+    _TTS_AUDIO_CACHE for instant (<10ms) playback on pickup.
+    """
+    import os
+    resolved_key = (api_key or os.getenv("SARVAM_API_KEY") or "").strip()
+    if not resolved_key or not text or not text.strip():
+        return False
+
+    clean_voice = (voice or "shreya").strip().lower()
+    speaker_map = {
+        "shreya": "shreya", "ritu": "ritu", "ratan": "ratan", "manan": "manan",
+        "arvind": "ratan", "meera": "ritu", "dhruv": "manan", "sara": "shreya", "default": "shreya"
+    }
+    resolved_voice = speaker_map.get(clean_voice, clean_voice)
+    cache_key = f"{resolved_voice}:{model}:{sample_rate}:{text.strip()}"
+    if cache_key in _TTS_AUDIO_CACHE:
+        return True
+
+    if resolved_key:
+        try:
+            url = "https://api.sarvam.ai/text-to-speech"
+            headers = {
+                "api-subscription-key": resolved_key,
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "inputs": [text.strip()],
+                "target_language_code": target_language_code,
+                "speaker": resolved_voice,
+                "pace": 1.08,
+                "speech_sample_rate": sample_rate,
+                "enable_preprocessing": False,
+                "model": model,
+            }
+            async with aiohttp.ClientSession() as sess:
+                async with sess.post(url, headers=headers, json=payload, timeout=5.0) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        audios = data.get("audios", [])
+                        if audios:
+                            raw_audio = base64.b64decode(audios[0])
+                            raw_pcm = raw_audio
+                            detected_rate = sample_rate
+                            num_channels = 1
+                            try:
+                                with wave.open(io.BytesIO(raw_audio), 'rb') as wav_file:
+                                    detected_rate = wav_file.getframerate()
+                                    num_channels = wav_file.getnchannels()
+                                    raw_pcm = wav_file.readframes(wav_file.getnframes())
+                            except Exception:
+                                pass
+                            _TTS_AUDIO_CACHE[cache_key] = (raw_pcm, detected_rate, num_channels)
+                            _TTS_AUDIO_CACHE[f"{resolved_voice}:{model}:{text.strip()}"] = (raw_pcm, detected_rate, num_channels)
+                            logger.info(f"[VOICE_ENGINE] Pre-warmed Sarvam audio successfully for '{text.strip()[:35]}...' | voice='{resolved_voice}'")
+                            return True
+        except Exception as e:
+            logger.debug(f"[VOICE_ENGINE] Sarvam pre-warm notice: {e}")
+
+    # Fallback to Edge Indian Neural voice to ensure zero-lag cache hit regardless of Sarvam quota
+    try:
+        import edge_tts
+        import av
+        edge_v = get_edge_neural_voice(resolved_voice)
+        communicate = edge_tts.Communicate(text.strip(), edge_v)
+        codec = av.Codec('mp3', 'r')
+        ctx = av.CodecContext.create(codec)
+        resampler = av.AudioResampler(format='s16', layout='mono', rate=sample_rate)
+        pcm_data = bytearray()
+        async for chunk in communicate.stream():
+            if chunk.get('type') == 'audio':
+                packets = ctx.parse(chunk['data'])
+                for packet in packets:
+                    for frame in ctx.decode(packet):
+                        resampled = resampler.resample(frame)
+                        for rf in resampled:
+                            pcm_data.extend(rf.to_ndarray().tobytes())
+        for frame in ctx.decode(None):
+            for rf in resampler.resample(frame):
+                pcm_data.extend(rf.to_ndarray().tobytes())
+        if pcm_data:
+            pcm_bytes = bytes(pcm_data)
+            _TTS_AUDIO_CACHE[cache_key] = (pcm_bytes, sample_rate, 1)
+            _TTS_AUDIO_CACHE[f"{resolved_voice}:{model}:{text.strip()}"] = (pcm_bytes, sample_rate, 1)
+            logger.info(f"[VOICE_ENGINE] Pre-warmed Edge Neural audio successfully for '{text.strip()[:35]}...' | voice='{resolved_voice}'")
+            return True
+    except Exception as edge_err:
+        logger.debug(f"[VOICE_ENGINE] Edge TTS pre-warm notice: {edge_err}")
+
+    return False
 
 
 class LowLatencyClauseAggregator(BaseTextAggregator):
@@ -286,6 +389,24 @@ class SarvamTTSService(TTSService):
 
         req_sample_rate = self.sample_rate if self.sample_rate in (8000, 16000, 22050) else 16000
 
+        # Instant Cache Check: If entire phrase or greeting is in cache, deliver with 0ms latency
+        cache_key = f"{self.voice}:{self.model}:{req_sample_rate}:{text.strip()}"
+        cached_entry = _TTS_AUDIO_CACHE.get(cache_key) or _TTS_AUDIO_CACHE.get(f"{self.voice}:{self.model}:{text.strip()}")
+        if cached_entry:
+            cached_pcm, cached_rate, cached_channels = cached_entry
+            logger.info(f"[VOICE_ENGINE] Audio cache HIT ({len(cached_pcm)} bytes) | voice='{self.voice}' | text='{text.strip()[:40]}...'")
+            yield TTSStartedFrame()
+            chunk_size = 1280
+            for i in range(0, len(cached_pcm), chunk_size):
+                chunk = cached_pcm[i : i + chunk_size]
+                yield TTSAudioRawFrame(
+                    audio=chunk,
+                    sample_rate=cached_rate,
+                    num_channels=cached_channels,
+                )
+            yield TTSStoppedFrame()
+            return
+
         try:
             yield TTSStartedFrame()
 
@@ -294,6 +415,21 @@ class SarvamTTSService(TTSService):
 
             for clause in clauses:
                 emitted_for_clause = False
+
+                clause_cache_key = f"{self.voice}:{self.model}:{req_sample_rate}:{clause}"
+                if clause_cache_key in _TTS_AUDIO_CACHE:
+                    cached_pcm, cached_rate, cached_channels = _TTS_AUDIO_CACHE[clause_cache_key]
+                    logger.debug(f"[VOICE_ENGINE] Clause cache hit ({len(cached_pcm)} bytes): '{clause[:30]}...'")
+                    chunk_size = 1280
+                    for i in range(0, len(cached_pcm), chunk_size):
+                        chunk = cached_pcm[i : i + chunk_size]
+                        yield TTSAudioRawFrame(
+                            audio=chunk,
+                            sample_rate=cached_rate,
+                            num_channels=cached_channels,
+                        )
+                    emitted_for_clause = True
+                    continue
 
                 if should_try_sarvam:
                     try:
@@ -332,6 +468,7 @@ class SarvamTTSService(TTSService):
                                     except Exception:
                                         pass
 
+                                    _TTS_AUDIO_CACHE[clause_cache_key] = (raw_pcm, detected_rate, num_channels)
                                     chunk_size = 1280
                                     for i in range(0, len(raw_pcm), chunk_size):
                                         chunk = raw_pcm[i : i + chunk_size]

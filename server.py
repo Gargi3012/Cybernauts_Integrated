@@ -64,6 +64,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Team B Database startup notice (degrading gracefully): {e}")
 
+    # Pre-warm canonical persona greetings in background for 0ms startup voice latency
+    async def _prewarm_persona_greetings():
+        try:
+            from app.adapters.pipecat.sarvam_tts_service import prewarm_tts_audio
+            from app.services.persona_registry import CANONICAL_PERSONAS
+            for p_id, p_obj in CANONICAL_PERSONAS.items():
+                await prewarm_tts_audio(p_obj.greeting_en, voice=p_obj.voice, sample_rate=8000)
+            logger.info("Canonical persona greeting audios pre-warmed in memory.")
+        except Exception as pw_err:
+            logger.debug(f"Persona audio pre-warm notice: {pw_err}")
+    asyncio.create_task(_prewarm_persona_greetings())
+
     yield
 
     logger.info("Shutting down database connection pools...")
@@ -130,5 +142,5 @@ app.include_router(recordings_router)
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    reload_dirs = [BASE_DIR, TEAM_A_DIR, TEAM_B_DIR]
+    reload_dirs = [BASE_DIR]
     uvicorn.run("server:app", host="127.0.0.1", port=port, reload=True, reload_dirs=reload_dirs)

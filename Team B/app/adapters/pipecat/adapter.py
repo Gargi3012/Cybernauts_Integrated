@@ -890,77 +890,35 @@ class PipecatAdapter:
                     AssistantGreetingStarted(session_id=self.session_id)
                 )
                 
-                if getattr(self, "call_prompt_config", None):
-                    from pipecat.frames.frames import LLMRunFrame
-                    c_ctx = getattr(self, "company_context", None) or {}
-                    c_name = c_ctx.get("company_name") or ""
-                    contact = c_ctx.get("contact_name") or ""
-                    target_info = f" ({contact} at {c_name})" if contact and c_name else (f" ({contact})" if contact else (f" ({c_name})" if c_name else ""))
-                    logger.bind(session_id=self.session_id).info(f"Queueing dynamic custom call script opening greeting for call{target_info}")
-                    messages = [{
-                        "role": "user",
-                        "content": (
-                            f"The phone call has just connected to the recipient{target_info}. "
-                            "Deliver your opening greeting now, strictly following the call script, persona, and greeting instructions specified in your system instructions. "
-                            "Make it a natural, polite, and concise opening turn (1-2 sentences). Do not read the entire script at once."
-                        ),
+                from app.services.persona_registry import get_persona, resolve_opening_greeting
+                p_active = get_persona(getattr(self, "persona", "shreya"))
+                p_name = p_active.name
+
+                call_prompt_str = getattr(self.call_prompt_config, "call_prompt", "") if getattr(self, "call_prompt_config", None) else None
+                greeting_text = resolve_opening_greeting(
+                    persona_id_or_voice=self.persona,
+                    company_context=getattr(self, "company_context", None),
+                    call_prompt=call_prompt_str,
+                    previous_summary=getattr(self, "previous_summary", ""),
+                )
+
+                logger.bind(session_id=self.session_id).info(
+                    f"Queueing direct zero-lag initial greeting for persona '{p_name}': {greeting_text}"
+                )
+
+                # Ensure conversation context records the assistant's greeting so LLM has complete turn history
+                if hasattr(self.task, "_llm_context"):
+                    self.task._llm_context.add_message({
+                        "role": "assistant",
+                        "content": greeting_text,
                         "source": "INTERNAL_GREETING",
-                        "is_internal_instruction": True,
-                    }]
-                    if hasattr(self.task, "_llm_context"):
-                        for m in messages:
-                            self.task._llm_context.add_message(m)
-                    frames_to_queue = [
-                        LLMRunFrame()
-                    ]
-                elif getattr(self, "company_context", None):
-                    from pipecat.frames.frames import LLMRunFrame
-                    from app.services.persona_registry import get_persona
-                    p_active = get_persona(getattr(self, "persona", "shreya"))
-                    c_ctx = self.company_context
-                    c_name = c_ctx.get("company_name") or "there"
-                    contact = c_ctx.get("contact_name") or ""
-                    greet_target = f"{contact} at {c_name}" if contact else c_name
-                    logger.bind(session_id=self.session_id).info(f"Queueing dynamic outbound qualification greeting prompt for {greet_target}")
-                    messages = [{
-                        "role": "user", 
-                        "content": f"The outbound call has connected to {greet_target}. Greet them professionally and warmly as {p_active.name} from Flowiz and Cybernauts. Mention that you're reaching out regarding {c_name} and ask if they have a brief moment to speak about automating their operations.",
-                        "source": "INTERNAL_GREETING",
-                        "is_internal_instruction": True,
-                    }]
-                    if hasattr(self.task, "_llm_context"):
-                        for m in messages:
-                            self.task._llm_context.add_message(m)
-                    frames_to_queue = [
-                        LLMRunFrame()
-                    ]
-                elif getattr(self, "previous_summary", ""):
-                    from pipecat.frames.frames import LLMRunFrame
-                    logger.bind(session_id=self.session_id).info("Queueing dynamic returning customer greeting prompt")
-                    messages = [{
-                        "role": "user", 
-                        "content": "The user has just connected to the call. Please greet the returning customer naturally, referencing the previous conversation summary to personalize the greeting. Ask how you can assist them today. Do not use a fixed template, just be welcoming and concise.",
-                        "source": "INTERNAL_GREETING",
-                        "is_internal_instruction": True,
-                    }]
-                    # In Pipecat 1.5.0, BaseOpenAILLMService ignores LLMMessagesAppendFrame.
-                    # We must modify the shared context directly and push LLMRunFrame downstream.
-                    if hasattr(self.task, "_llm_context"):
-                        for m in messages:
-                            self.task._llm_context.add_message(m)
-                    frames_to_queue = [
-                        LLMRunFrame()
-                    ]
-                else:
-                    from app.services.persona_registry import get_persona
-                    p_active = get_persona(getattr(self, "persona", "shreya"))
-                    greeting_text = p_active.greeting_en
-                    logger.bind(session_id=self.session_id).info(f"Synthesizing dynamic initial greeting for persona '{p_active.name}': {greeting_text}")
-                    frames_to_queue = [
-                        TTSSpeakFrame(text=greeting_text, append_to_context=True),
-                        BotStoppedSpeakingFrame()
-                    ]
-                
+                    })
+
+                frames_to_queue = [
+                    TTSSpeakFrame(text=greeting_text, append_to_context=False),
+                    BotStoppedSpeakingFrame()
+                ]
+
                 if frames_to_queue:
                     await self.task.queue_frames(frames_to_queue)
 
