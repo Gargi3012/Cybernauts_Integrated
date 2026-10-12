@@ -97,6 +97,9 @@ class LiveAgentView {
 
     switch (data.event) {
       case 'greeting_started':
+        if (data.text && data.text.trim()) {
+          window.store.addTranscript('agent', data.text.trim());
+        }
         window.store.setVoiceState({
           speakerState: 'ai_speaking',
           statusMessage: 'AI greeting prospect...'

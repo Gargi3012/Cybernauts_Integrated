@@ -44,6 +44,108 @@ EDGE_NEURAL_VOICE_MAP = {
 }
 
 
+def preload_static_persona_greetings() -> int:
+    """Pre-load static greeting WAV files for all canonical personas into _TTS_AUDIO_CACHE for instant 0ms startup."""
+    import audioop
+    import os
+    greetings_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "static", "audio", "greetings")
+    )
+    if not os.path.exists(greetings_dir):
+        return 0
+
+    try:
+        from app.services.persona_registry import CANONICAL_PERSONAS, resolve_opening_greeting
+    except Exception as e:
+        logger.debug(f"[VOICE_ENGINE] persona_registry import notice: {e}")
+        return 0
+
+    loaded = 0
+    for pid, p_obj in CANONICAL_PERSONAS.items():
+        voice = p_obj.voice
+        model = p_obj.model
+
+        # 1. Default greeting
+        def_path = os.path.join(greetings_dir, f"{pid}_default.wav")
+        if os.path.exists(def_path):
+            try:
+                with wave.open(def_path, "rb") as w:
+                    rate = w.getframerate()
+                    ch = w.getnchannels()
+                    pcm_8k = w.readframes(w.getnframes())
+                pcm_16k = audioop.ratecv(pcm_8k, 2, ch, rate, 16000, None)[0]
+
+                def_texts = {
+                    p_obj.greeting_en.strip(),
+                    resolve_opening_greeting(pid).strip(),
+                    f"Hello, this is {p_obj.name} from Flowiz and Cybernauts. How can I help you today?",
+                    f"Hello! This is {p_obj.name} from Flowiz and Cybernauts.",
+                    p_obj.greeting_hi.strip(),
+                    p_obj.greeting_hinglish.strip(),
+                }
+                for txt in def_texts:
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:8000:{txt}"] = (pcm_8k, 8000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:16000:{txt}"] = (pcm_16k, 16000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:{txt}"] = (pcm_16k, 16000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:8000:{txt}"] = (pcm_8k, 8000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:16000:{txt}"] = (pcm_16k, 16000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:{txt}"] = (pcm_16k, 16000, ch)
+
+                _TTS_AUDIO_CACHE[f"{pid}_default:8000"] = (pcm_8k, 8000, ch)
+                _TTS_AUDIO_CACHE[f"{pid}_default:16000"] = (pcm_16k, 16000, ch)
+                _TTS_AUDIO_CACHE[f"{pid}_default"] = (pcm_16k, 16000, ch)
+                _TTS_AUDIO_CACHE[f"{voice}_default:8000"] = (pcm_8k, 8000, ch)
+                _TTS_AUDIO_CACHE[f"{voice}_default:16000"] = (pcm_16k, 16000, ch)
+                _TTS_AUDIO_CACHE[f"{voice}_default"] = (pcm_16k, 16000, ch)
+                loaded += 1
+            except Exception as e:
+                logger.warning(f"[VOICE_ENGINE] Failed loading {def_path}: {e}")
+
+        # 2. Outbound greeting
+        out_path = os.path.join(greetings_dir, f"{pid}_outbound.wav")
+        if os.path.exists(out_path):
+            try:
+                with wave.open(out_path, "rb") as w:
+                    rate = w.getframerate()
+                    ch = w.getnchannels()
+                    pcm_8k = w.readframes(w.getnframes())
+                pcm_16k = audioop.ratecv(pcm_8k, 2, ch, rate, 16000, None)[0]
+
+                out_texts = {
+                    resolve_opening_greeting(pid, company_context={"company_name": "your operations"}).strip(),
+                    resolve_opening_greeting(pid, company_context={"company_name": "your business"}).strip(),
+                    f"Hello! This is {p_obj.name} from Flowiz and Cybernauts. Do you have a brief moment to speak about automating your operations?",
+                    f"Hello! This is {p_obj.name} from Flowiz and Cybernauts. I'm reaching out regarding your business—do you have a quick moment to speak?",
+                }
+                for txt in out_texts:
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:8000:{txt}"] = (pcm_8k, 8000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:16000:{txt}"] = (pcm_16k, 16000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:{txt}"] = (pcm_16k, 16000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:8000:{txt}"] = (pcm_8k, 8000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:16000:{txt}"] = (pcm_16k, 16000, ch)
+                    _TTS_AUDIO_CACHE[f"{voice}:{txt}"] = (pcm_16k, 16000, ch)
+
+                _TTS_AUDIO_CACHE[f"{pid}_outbound:8000"] = (pcm_8k, 8000, ch)
+                _TTS_AUDIO_CACHE[f"{pid}_outbound:16000"] = (pcm_16k, 16000, ch)
+                _TTS_AUDIO_CACHE[f"{pid}_outbound"] = (pcm_16k, 16000, ch)
+                _TTS_AUDIO_CACHE[f"{voice}_outbound:8000"] = (pcm_8k, 8000, ch)
+                _TTS_AUDIO_CACHE[f"{voice}_outbound:16000"] = (pcm_16k, 16000, ch)
+                _TTS_AUDIO_CACHE[f"{voice}_outbound"] = (pcm_16k, 16000, ch)
+                loaded += 1
+            except Exception as e:
+                logger.warning(f"[VOICE_ENGINE] Failed loading {out_path}: {e}")
+
+    logger.info(f"[VOICE_ENGINE] Preloaded static persona greetings ({loaded} personas, {len(_TTS_AUDIO_CACHE)} keys in cache).")
+    return loaded
+
+
+# Automatically preload static greetings into RAM on module load
+try:
+    preload_static_persona_greetings()
+except Exception as _init_preload_err:
+    logger.debug(f"[VOICE_ENGINE] Init preload notice: {_init_preload_err}")
+
+
 def reset_sarvam_quota_status() -> None:
     """Manually reset the Sarvam quota exhaustion flag."""
     global _SARVAM_QUOTA_EXHAUSTED
@@ -55,6 +157,7 @@ def get_edge_neural_voice(voice_id: str) -> str:
     """Resolve an Indian Neural voice for the specified persona."""
     clean_id = (voice_id or "shreya").strip().lower()
     return EDGE_NEURAL_VOICE_MAP.get(clean_id, "hi-IN-SwaraNeural")
+
 
 
 async def prewarm_tts_audio(
@@ -285,6 +388,8 @@ class SarvamTTSService(TTSService):
             ),
             **kwargs
         )
+        self.sample_rate_configured = sample_rate or 16000
+        self._init_sample_rate = sample_rate or 16000
         import os
         resolved_key = (api_key or os.getenv("SARVAM_API_KEY") or "").strip()
         global _LAST_SEEN_KEY, _SARVAM_QUOTA_EXHAUSTED
@@ -383,133 +488,147 @@ class SarvamTTSService(TTSService):
         if not text or not text.strip():
             return
 
-        clauses = [c.strip() for c in re.split(r'(?<=[.?!,;])\s+', text.strip()) if c.strip()]
-        if not clauses:
-            clauses = [text.strip()]
+        clean_text = text.strip()
+        configured_rate = getattr(self, "sample_rate_configured", None) or getattr(self, "_init_sample_rate", None) or 16000
+        req_sample_rate = self.sample_rate if self.sample_rate in (8000, 16000, 22050) else configured_rate
+        if req_sample_rate not in (8000, 16000, 22050):
+            req_sample_rate = 16000
 
-        req_sample_rate = self.sample_rate if self.sample_rate in (8000, 16000, 22050) else 16000
+        # Instant Cache Check: Deliver pre-rendered audio with 0ms latency
+        cache_key = f"{self.voice}:{self.model}:{req_sample_rate}:{clean_text}"
+        cached_entry = (
+            _TTS_AUDIO_CACHE.get(cache_key)
+            or _TTS_AUDIO_CACHE.get(f"{self.voice}:{self.model}:{clean_text}")
+            or _TTS_AUDIO_CACHE.get(f"{self.voice}:{req_sample_rate}:{clean_text}")
+            or _TTS_AUDIO_CACHE.get(f"{self.voice}:{clean_text}")
+        )
 
-        # Instant Cache Check: If entire phrase or greeting is in cache, deliver with 0ms latency
-        cache_key = f"{self.voice}:{self.model}:{req_sample_rate}:{text.strip()}"
-        cached_entry = _TTS_AUDIO_CACHE.get(cache_key) or _TTS_AUDIO_CACHE.get(f"{self.voice}:{self.model}:{text.strip()}")
+        if not cached_entry:
+            # Check for canonical persona greeting matches
+            from app.services.persona_registry import CANONICAL_PERSONAS
+            p_obj = CANONICAL_PERSONAS.get(self.voice)
+            if p_obj and ("flowiz" in clean_text.lower() or p_obj.name.lower() in clean_text.lower()):
+                is_outbound = "reaching out" in clean_text.lower() or "moment to speak" in clean_text.lower() or "operations" in clean_text.lower()
+                variant = "outbound" if is_outbound else "default"
+                cached_entry = (
+                    _TTS_AUDIO_CACHE.get(f"{self.voice}_{variant}:{req_sample_rate}")
+                    or _TTS_AUDIO_CACHE.get(f"{self.voice}_{variant}")
+                    or _TTS_AUDIO_CACHE.get(f"{self.voice}_default:{req_sample_rate}")
+                    or _TTS_AUDIO_CACHE.get(f"{self.voice}_default")
+                )
+
         if cached_entry:
             cached_pcm, cached_rate, cached_channels = cached_entry
-            logger.info(f"[VOICE_ENGINE] Audio cache HIT ({len(cached_pcm)} bytes) | voice='{self.voice}' | text='{text.strip()[:40]}...'")
+            delivery_pcm = cached_pcm
+            if cached_rate != req_sample_rate:
+                import audioop
+                try:
+                    delivery_pcm = audioop.ratecv(cached_pcm, 2, cached_channels, cached_rate, req_sample_rate, None)[0]
+                except Exception as resample_err:
+                    logger.debug(f"[VOICE_ENGINE] Cache resample notice: {resample_err}")
+                    delivery_pcm = cached_pcm
+
+            logger.info(f"[VOICE_ENGINE] Audio cache HIT ({len(delivery_pcm)} bytes) | voice='{self.voice}' | rate={req_sample_rate}Hz | text='{clean_text[:40]}...'")
             yield TTSStartedFrame()
             chunk_size = 1280
-            for i in range(0, len(cached_pcm), chunk_size):
-                chunk = cached_pcm[i : i + chunk_size]
+            for i in range(0, len(delivery_pcm), chunk_size):
+                chunk = delivery_pcm[i : i + chunk_size]
                 yield TTSAudioRawFrame(
                     audio=chunk,
-                    sample_rate=cached_rate,
+                    sample_rate=req_sample_rate,
                     num_channels=cached_channels,
                 )
             yield TTSStoppedFrame()
             return
 
+        # Dynamic synthesis path (conversation turns)
         try:
             yield TTSStartedFrame()
 
-            # Determine whether to attempt Sarvam or stream directly via Neural Indian Voice Engine
             should_try_sarvam = bool(self.api_key and not _SARVAM_QUOTA_EXHAUSTED)
+            emitted = False
 
-            for clause in clauses:
-                emitted_for_clause = False
+            if should_try_sarvam:
+                try:
+                    session = await self._get_session()
+                    headers = {
+                        "api-subscription-key": self.api_key,
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "inputs": [clean_text],
+                        "target_language_code": self.target_language_code,
+                        "speaker": self.voice,
+                        "pace": 1.08,
+                        "speech_sample_rate": req_sample_rate,
+                        "enable_preprocessing": False,
+                        "model": self.model,
+                    }
+                    if "v3" not in self.model.lower():
+                        payload["pitch"] = 0
+                        payload["loudness"] = 1.5
 
-                clause_cache_key = f"{self.voice}:{self.model}:{req_sample_rate}:{clause}"
-                if clause_cache_key in _TTS_AUDIO_CACHE:
-                    cached_pcm, cached_rate, cached_channels = _TTS_AUDIO_CACHE[clause_cache_key]
-                    logger.debug(f"[VOICE_ENGINE] Clause cache hit ({len(cached_pcm)} bytes): '{clause[:30]}...'")
-                    chunk_size = 1280
-                    for i in range(0, len(cached_pcm), chunk_size):
-                        chunk = cached_pcm[i : i + chunk_size]
-                        yield TTSAudioRawFrame(
-                            audio=chunk,
-                            sample_rate=cached_rate,
-                            num_channels=cached_channels,
-                        )
-                    emitted_for_clause = True
-                    continue
+                    # Responsive 1.5s timeout on Sarvam to avoid conversational lag
+                    async with session.post(self.url, headers=headers, json=payload, timeout=1.5) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            audios = data.get("audios", [])
+                            if audios:
+                                raw_audio = base64.b64decode(audios[0])
+                                raw_pcm = raw_audio
+                                detected_rate = req_sample_rate
+                                num_channels = 1
+                                try:
+                                    with wave.open(io.BytesIO(raw_audio), 'rb') as wav_file:
+                                        detected_rate = wav_file.getframerate()
+                                        num_channels = wav_file.getnchannels()
+                                        raw_pcm = wav_file.readframes(wav_file.getnframes())
+                                except Exception:
+                                    pass
 
-                if should_try_sarvam:
-                    try:
-                        session = await self._get_session()
-                        headers = {
-                            "api-subscription-key": self.api_key,
-                            "Content-Type": "application/json",
-                        }
-                        payload = {
-                            "inputs": [clause],
-                            "target_language_code": self.target_language_code,
-                            "speaker": self.voice,
-                            "pace": 1.08,
-                            "speech_sample_rate": req_sample_rate,
-                            "enable_preprocessing": False,
-                            "model": self.model,
-                        }
-                        if "v3" not in self.model.lower():
-                            payload["pitch"] = 0
-                            payload["loudness"] = 1.5
-
-                        async with session.post(self.url, headers=headers, json=payload, timeout=6.0) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                audios = data.get("audios", [])
-                                if audios:
-                                    raw_audio = base64.b64decode(audios[0])
-                                    raw_pcm = raw_audio
-                                    detected_rate = req_sample_rate
-                                    num_channels = 1
-                                    try:
-                                        with wave.open(io.BytesIO(raw_audio), 'rb') as wav_file:
-                                            detected_rate = wav_file.getframerate()
-                                            num_channels = wav_file.getnchannels()
-                                            raw_pcm = wav_file.readframes(wav_file.getnframes())
-                                    except Exception:
-                                        pass
-
-                                    _TTS_AUDIO_CACHE[clause_cache_key] = (raw_pcm, detected_rate, num_channels)
-                                    chunk_size = 1280
-                                    for i in range(0, len(raw_pcm), chunk_size):
-                                        chunk = raw_pcm[i : i + chunk_size]
-                                        yield TTSAudioRawFrame(
-                                            audio=chunk,
-                                            sample_rate=detected_rate,
-                                            num_channels=num_channels,
-                                        )
-                                    emitted_for_clause = True
+                                _TTS_AUDIO_CACHE[cache_key] = (raw_pcm, detected_rate, num_channels)
+                                chunk_size = 1280
+                                for i in range(0, len(raw_pcm), chunk_size):
+                                    chunk = raw_pcm[i : i + chunk_size]
+                                    yield TTSAudioRawFrame(
+                                        audio=chunk,
+                                        sample_rate=detected_rate,
+                                        num_channels=num_channels,
+                                    )
+                                emitted = True
+                        else:
+                            err_body = await resp.text()
+                            if resp.status == 402 or "insufficient_quota" in err_body.lower() or "credits" in err_body.lower():
+                                _SARVAM_QUOTA_EXHAUSTED = True
+                                _SARVAM_LAST_ERROR_TIME = time.time()
+                                logger.warning(
+                                    f"[VOICE_ENGINE] Sarvam quota exhausted (HTTP 402). "
+                                    f"Instantly switching to high-fidelity Neural Indian Voice engine: "
+                                    f"persona='{self.voice}' -> model='{self.edge_voice}'"
+                                )
                             else:
-                                err_body = await resp.text()
-                                if resp.status == 402 or "insufficient_quota" in err_body.lower() or "credits" in err_body.lower():
-                                    _SARVAM_QUOTA_EXHAUSTED = True
-                                    _SARVAM_LAST_ERROR_TIME = time.time()
-                                    logger.warning(
-                                        f"[VOICE_ENGINE] Sarvam quota exhausted (HTTP 402). "
-                                        f"Instantly switching to high-fidelity Neural Indian Voice engine: "
-                                        f"persona='{self.voice}' -> model='{self.edge_voice}'"
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"[VOICE_ENGINE] Sarvam API returned status {resp.status}. "
-                                        f"Routing to Neural Indian Voice engine."
-                                    )
-                                should_try_sarvam = False
+                                logger.warning(
+                                    f"[VOICE_ENGINE] Sarvam API returned status {resp.status}. "
+                                    f"Routing to Neural Indian Voice engine."
+                                )
+                            should_try_sarvam = False
 
-                    except Exception as s_err:
-                        logger.warning(f"[VOICE_ENGINE] Sarvam request error: {s_err}. Routing to Neural Indian Voice engine.")
-                        should_try_sarvam = False
+                except Exception as s_err:
+                    logger.warning(f"[VOICE_ENGINE] Sarvam request notice ({s_err}). Routing to Neural Indian Voice engine.")
+                    should_try_sarvam = False
 
-                # If Sarvam was not attempted, failed, or quota exhausted, stream via Edge Neural Voice
-                if not emitted_for_clause:
-                    async for pcm_chunk in self._stream_edge_neural_pcm(clause, req_sample_rate):
-                        yield TTSAudioRawFrame(
-                            audio=pcm_chunk,
-                            sample_rate=req_sample_rate,
-                            num_channels=1,
-                        )
+            # If Sarvam was not attempted, failed, or quota exhausted, stream via Edge Neural Voice
+            if not emitted:
+                async for pcm_chunk in self._stream_edge_neural_pcm(clean_text, req_sample_rate):
+                    yield TTSAudioRawFrame(
+                        audio=pcm_chunk,
+                        sample_rate=req_sample_rate,
+                        num_channels=1,
+                    )
 
             yield TTSStoppedFrame()
 
         except Exception as e:
             logger.error(f"SarvamTTSService execution error: {e}")
             yield ErrorFrame(error=f"Voice synthesis failed: {e}")
+

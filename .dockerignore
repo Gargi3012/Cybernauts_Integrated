@@ -1,0 +1,85 @@
+# ==============================================================================
+# Docker Ignore Configuration — Cybernauts Integrated Platform
+# Ensures no secrets, caches, virtualenvs, or unneeded files enter Docker images
+# ==============================================================================
+
+# ── Secrets, Keys & Environment Files (CRITICAL: NEVER BAKE INTO IMAGE) ─────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+cybernautsServices.pem
+
+# ── Git & GitHub Metadata ───────────────────────────────────────────────────
+.git/
+.github/
+
+# ── Python Virtual Environments ──────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+Team A/venv/
+Team B/venv/
+*/venv/
+*/.venv/
+
+# ── Python Bytecode & Build Artifacts ─────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# ── Test Artifacts, Coverage & Linting ───────────────────────────────────────
+.pytest_cache/
+*.pytest_cache/
+.cache/
+.coverage
+htmlcov/
+bandit_report.json
+tests_verification_*.py
+
+# ── Application Logs & Temporary Files ───────────────────────────────────────
+logs/
+*.log
+server_logs*.txt
+debug_html/
+google_debug/
+google_samples/
+google_debug_last_zero.html
+google_raw.html
+scratch/
+artifacts/
+
+# ── Runtime Databases & Local Data (Preserved via Volumes) ───────────────────
+leads.db
+Team A/leads.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+data/
+output/
+search_cache.json
+proxy_state.json
+cookies/
+
+# ── Call Recordings (Mounted at runtime via persistent volumes) ──────────────
+static/recordings/*
+!static/recordings/.gitkeep
+
+# ── Documentation & IDE Artifacts ────────────────────────────────────────────
+*.md
+!README.md
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

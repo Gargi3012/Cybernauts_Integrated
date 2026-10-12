@@ -42,11 +42,11 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         model="bulbul:v3",
         role="Friendly Sales & Success Specialist",
         tone="Warm, Conversational & Approachable",
-        accent="Natural Hinglish / Indian English",
+        accent="Indian English / Hinglish",
         avatar="👩",
-        greeting_en="Hello, this is Shreya from Flowiz and Cybernauts. How can I help you today?",
-        greeting_hi="नमस्ते, मैं Flowiz से Shreya बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?",
-        greeting_hinglish="Hi, main Flowiz se Shreya bol rahi hoon. Aaj main aapki kya help kar sakti hoon?",
+        greeting_en="Hi, this is Shreya from Flowiz and Cybernauts. I'm calling to discuss workflow automation and voice AI solutions—do you have a quick minute?",
+        greeting_hi="नमस्ते, मैं Flowiz से Shreya बोल रही हूँ। मैं आपके बिज़नेस वर्कफ़्लो ऑटोमेशन के बारे में बात करने के लिए कॉल कर रही हूँ—क्या आपके पास एक मिनट है?",
+        greeting_hinglish="Hi, main Flowiz se Shreya bol rahi hoon. Main aapke business workflow automation ke baare me baat karne ke liye call kar rahi hoon—kya aapke paas ek minute hai?",
         hindi_verb="रही हूँ",
         hindi_can_verb="कर सकती हूँ",
         sample_text="Hi, main Flowiz se Shreya bol rahi hoon. Hum aapki sales team ke calls ko automate karne me help karte hain."
@@ -61,9 +61,9 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         tone="Calm, Clear & Supportive",
         accent="Polite Indian English / Hindi",
         avatar="👩‍💼",
-        greeting_en="Hello, this is Ritu from Flowiz and Cybernauts. How may I assist you today?",
-        greeting_hi="नमस्ते, मैं Flowiz से Ritu बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?",
-        greeting_hinglish="Hi, main Flowiz se Ritu bol rahi hoon. Aaj main aapki kya help kar sakti hoon?",
+        greeting_en="Hi, this is Ritu from Flowiz and Cybernauts. I'm calling to discuss automating your business workflows—do you have a quick minute?",
+        greeting_hi="नमस्ते, मैं Flowiz से Ritu बोल रही हूँ। मैं आपके बिज़नेस ऑपरेशन्स ऑटोमेशन के बारे में बात करने के लिए कॉल कर रही हूँ—क्या आपके पास एक मिनट है?",
+        greeting_hinglish="Hi, main Flowiz se Ritu bol rahi hoon. Main aapke business operations automation ke baare me baat karne ke liye call kar rahi hoon—kya aapke paas ek minute hai?",
         hindi_verb="रही हूँ",
         hindi_can_verb="कर सकती हूँ",
         sample_text="Hello, main Flowiz se Ritu bol rahi hoon. Aapka platform onboarding process smooth aur simple banana hamari priority hai."
@@ -78,9 +78,9 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         tone="Professional, Confident & Authoritative",
         accent="Corporate Indian English / Hinglish",
         avatar="👨",
-        greeting_en="Hello, this is Ratan from Flowiz and Cybernauts. How can I help you today?",
-        greeting_hi="नमस्ते, मैं Flowiz से Ratan बोल रहा हूँ। मैं आपकी क्या सहायता कर सकता हूँ?",
-        greeting_hinglish="Hi, main Flowiz se Ratan bol raha hoon. Aaj main aapki kya help kar sakta hoon?",
+        greeting_en="Hi, this is Ratan from Flowiz and Cybernauts. I'm calling to discuss automating your business workflows—do you have a quick minute?",
+        greeting_hi="नमस्ते, मैं Flowiz से Ratan बोल रहा हूँ। मैं आपके बिज़नेस वर्कफ़्लो ऑटोमेशन के बारे में बात करने के लिए कॉल कर रहा हूँ—क्या आपके पास एक मिनट है?",
+        greeting_hinglish="Hi, main Flowiz se Ratan bol raha hoon. Main aapke business workflow automation ke baare me baat karne ke liye call kar raha hoon—kya aapke paas ek minute hai?",
         hindi_verb="रहा हूँ",
         hindi_can_verb="कर सकता हूँ",
         sample_text="Hi, main Flowiz se Ratan bol raha hoon. Hum enterprise businesses ke outbound lead operations ko automate karte hain."
@@ -95,9 +95,9 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         tone="Energetic, Sharp & Modern",
         accent="Modern Indian Tech Hinglish",
         avatar="👨‍💻",
-        greeting_en="Hey there, this is Manan from Flowiz and Cybernauts. How are you doing today?",
-        greeting_hi="नमस्ते, मैं Flowiz से Manan बोल रहा हूँ। आज मैं आपकी क्या सहायता कर सकता हूँ?",
-        greeting_hinglish="Hi, main Flowiz se Manan bol raha hoon. Bataiye, aaj main aapki kya help kar sakta hoon?",
+        greeting_en="Hey, this is Manan from Flowiz and Cybernauts. I'm calling to discuss automating your workflows—do you have a quick minute?",
+        greeting_hi="नमस्ते, मैं Flowiz से Manan बोल रहा हूँ। मैं आपके वर्कफ़्लो ऑटोमेशन के बारे में बात करने के लिए कॉल कर रहा हूँ—क्या आपके पास एक मिनट है?",
+        greeting_hinglish="Hey, main Flowiz se Manan bol raha hoon. Main aapke workflow automation ke baare me baat karne ke liye call kar raha hoon—kya aapke paas ek minute hai?",
         hindi_verb="रहा हूँ",
         hindi_can_verb="कर सकता हूँ",
         sample_text="Hey! Main Flowiz se Manan bol raha hoon. Real-time voice AI pipelines aur automated qualification hamara core expertise hai."
@@ -198,7 +198,11 @@ def resolve_opening_greeting(
         c_dict = company_context
     elif isinstance(company_context, str) and company_context.strip():
         try:
-            c_dict = json.loads(company_context)
+            parsed = json.loads(company_context)
+            if isinstance(parsed, dict):
+                c_dict = parsed
+            else:
+                c_dict = {"company_name": company_context.strip()}
         except Exception:
             c_dict = {"company_name": company_context.strip()}
 

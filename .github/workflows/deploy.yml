@@ -1,0 +1,164 @@
+name: CI/CD Pipeline & EC2 Deployment
+
+# ==============================================================================
+# Cybernauts Integrated Platform — GitHub Actions CI/CD Workflow
+# Validates code, runs unit tests, builds & pushes Docker image to Amazon ECR,
+# and securely deploys to AWS EC2 over SSH with automatic health validation.
+# ==============================================================================
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'Deployment environment target'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  # ── STAGE 1: Code Quality, Lint & Unit Tests ──────────────────────────────
+  test:
+    name: Test & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+
+      - name: Python Syntax & Bytecode Compilation Check
+        run: |
+          python -m compileall server.py recording_manager.py "Team A" "Team B" routers
+
+      - name: Run Core Persona & Sliding Window Context Tests
+        run: |
+          pytest "Team B/tests/test_dynamic_personas.py" "Team B/tests/test_sliding_window_and_prompt_optimization.py" -v
+
+  # ── STAGE 2: Build & Push Docker Image to Amazon ECR ───────────────────────
+  build-and-push:
+    name: Build & Push to Amazon ECR
+    needs: test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.build-image.outputs.image_uri }}
+      image_tag: ${{ steps.build-image.outputs.image_tag }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag and Push Image to ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_NAME || 'cybernauts-integrated' }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          LATEST_URI="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+          echo "Building Docker image: $IMAGE_URI"
+          docker build \
+            --tag "$IMAGE_URI" \
+            --tag "$LATEST_URI" \
+            .
+
+          echo "Pushing Docker image to Amazon ECR..."
+          docker push "$IMAGE_URI"
+          docker push "$LATEST_URI"
+
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+  # ── STAGE 3: Secure Deployment to AWS EC2 over SSH ────────────────────────
+  deploy:
+    name: Deploy to AWS EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS Credentials for EC2 Auth Token
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Deploy via SSH to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          TARGET_IMAGE: ${{ needs.build-and-push.outputs.image_uri }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          APP_DIR: ${{ vars.APP_DIR || '/opt/cybernauts' }}
+        run: |
+          # Configure SSH authentication
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          # Add host key to known_hosts to prevent MITM warnings while keeping strict security
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          echo "Connecting to EC2 instance ($EC2_USER@$EC2_HOST)..."
+
+          # Execute deployment commands on EC2
+          ssh "$EC2_USER@$EC2_HOST" bash -c "'
+            set -euo pipefail
+            
+            # 1. Authenticate Docker with Amazon ECR on the EC2 host
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $(echo $TARGET_IMAGE | cut -d/ -f1)
+
+            # 2. Navigate to project deployment directory
+            cd $APP_DIR
+
+            # 3. Pull latest scripts and compose file from git repository
+            git fetch origin main
+            git reset --hard origin/main
+
+            # 4. Make deployment script executable and trigger deployment
+            chmod +x scripts/deploy.sh
+            export APP_DIR=$APP_DIR
+            ./scripts/deploy.sh $TARGET_IMAGE
+          '"
+
+      - name: Cleanup SSH Credentials
+        if: always()
+        run: |
+          rm -rf ~/.ssh/id_rsa

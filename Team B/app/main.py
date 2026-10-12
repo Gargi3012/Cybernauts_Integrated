@@ -1103,7 +1103,12 @@ async def run_voice_session(
     )
 
     async def on_greeting_started(e: AssistantGreetingStarted):
-        await broadcast_frontend_event("greeting_started")
+        greet_text = ""
+        if hasattr(e, "payload") and isinstance(e.payload, dict):
+            greet_text = e.payload.get("text", "")
+        if greet_text:
+            await session_manager.add_message(session_id, role="assistant", content=greet_text)
+        await broadcast_frontend_event("greeting_started", {"text": greet_text})
 
     async def on_greeting_completed(e: AssistantGreetingCompleted):
         await broadcast_frontend_event("greeting_complete")

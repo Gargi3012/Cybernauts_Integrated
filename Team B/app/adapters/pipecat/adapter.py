@@ -244,14 +244,16 @@ def _build_real_pipeline_task(
                 "even if the call script instructs otherwise.\n"
                 "4. You must NEVER bypass call termination (end_call) when the prospect genuinely says goodbye.\n"
                 "5. Keep responses concise (1-2 conversational sentences, ~20-30 words max). Never read the entire script at once as a monologue.\n"
-                f"6. GREETING & IDENTITY PRECEDENCE: If the call script specifies a specific target prospect greeting (e.g. greeting Rahul Manchanda) or opening question, follow it, but always maintain your identity as {p_name} from Flowiz and Cybernauts. Never identify as Alex.\n\n"
+                f"6. GREETING & IDENTITY PRECEDENCE: Your initial introduction as {p_name} from Flowiz and Cybernauts has ALREADY been delivered in the first turn. DO NOT re-introduce yourself or repeat 'do you have a minute' when the prospect answers. Transition smoothly into the script's first inquiry.\n\n"
             )
         else:
             directive_block = (
                 "═══════════════════════════════════════════════════════\n"
                 " LEVEL 3: OUTBOUND CALL DIRECTIVE: (DEFAULT)\n"
                 "═══════════════════════════════════════════════════════\n"
-                f"- Introduce yourself as {p_name} from Flowiz and Cybernauts.\n"
+                f"- OPENING GREETING ALREADY DELIVERED: You have ALREADY delivered your opening introduction as {p_name} from Flowiz and Cybernauts asking if they have a minute (turn 1). DO NOT re-introduce yourself, DO NOT repeat your name, and DO NOT ask 'do you have a minute' again!\n"
+                "- When the prospect answers (e.g. 'Hello', 'Yes', 'Haanji', 'Sure', 'Bataiye'), immediately acknowledge and proceed smoothly to qualification:\n"
+                "  (e.g., 'Great! Which part of your workflow would you most like to automate—lead follow-ups, customer calls, or another process?')\n"
                 "- You are calling to discuss automating their workflows or integrating voice AI agents.\n"
                 "- Personalize the conversation naturally using the prospect's industry, company name, and contact name.\n"
                 "- Ask qualifying questions: budget, timeline, key pain points, and decision-maker involvement.\n"
@@ -880,16 +882,14 @@ class PipecatAdapter:
             import os
             import wave
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+            import time
+            call_start_ts = time.perf_counter()
+            self._call_start_ts = call_start_ts
             if os.getenv("ENABLE_INITIAL_GREETING", "True").lower() == "true":
-                from pipecat.frames.frames import TTSSpeakFrame, BotStoppedSpeakingFrame
+                from pipecat.frames.frames import TTSSpeakFrame
                 from app.events.event_types import AssistantGreetingStarted
                 
-                logger.bind(session_id=self.session_id).info("Queueing initial direct TTS greeting")
-                
-                self.event_bus.publish_sync(
-                    AssistantGreetingStarted(session_id=self.session_id)
-                )
-                
+                greet_gen_start = time.perf_counter()
                 from app.services.persona_registry import get_persona, resolve_opening_greeting
                 p_active = get_persona(getattr(self, "persona", "shreya"))
                 p_name = p_active.name
@@ -901,9 +901,14 @@ class PipecatAdapter:
                     call_prompt=call_prompt_str,
                     previous_summary=getattr(self, "previous_summary", ""),
                 )
+                greet_gen_dur = (time.perf_counter() - greet_gen_start) * 1000
+
+                self.event_bus.publish_sync(
+                    AssistantGreetingStarted(session_id=self.session_id, payload={"text": greeting_text})
+                )
 
                 logger.bind(session_id=self.session_id).info(
-                    f"Queueing direct zero-lag initial greeting for persona '{p_name}': {greeting_text}"
+                    f"[LATENCY_BENCHMARK] Initial greeting resolved in {greet_gen_dur:.2f}ms | persona='{p_name}' | text='{greeting_text}'"
                 )
 
                 # Ensure conversation context records the assistant's greeting so LLM has complete turn history
@@ -915,12 +920,14 @@ class PipecatAdapter:
                     })
 
                 frames_to_queue = [
-                    TTSSpeakFrame(text=greeting_text, append_to_context=False),
-                    BotStoppedSpeakingFrame()
+                    TTSSpeakFrame(text=greeting_text, append_to_context=False)
                 ]
 
                 if frames_to_queue:
                     await self.task.queue_frames(frames_to_queue)
+                    logger.bind(session_id=self.session_id).info(
+                        f"[LATENCY_BENCHMARK] Call start to greeting queued: {(time.perf_counter() - call_start_ts)*1000:.2f}ms"
+                    )
 
             # For the mock task: manually simulate processor events
             if isinstance(self.task, MockPipecatPipelineTask):
