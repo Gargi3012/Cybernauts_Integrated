@@ -139,24 +139,16 @@ jobs:
           echo "Connecting to EC2 instance ($EC2_USER@$EC2_HOST)..."
 
           # Execute deployment commands on EC2
-          ssh "$EC2_USER@$EC2_HOST" bash -c "'
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "
             set -euo pipefail
-            
-            # 1. Authenticate Docker with Amazon ECR on the EC2 host
-            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $(echo $TARGET_IMAGE | cut -d/ -f1)
-
-            # 2. Navigate to project deployment directory
-            cd $APP_DIR
-
-            # 3. Pull latest scripts and compose file from git repository
+            aws ecr get-login-password --region \"$AWS_REGION\" | docker login --username AWS --password-stdin \$(echo \"$TARGET_IMAGE\" | cut -d/ -f1)
+            cd \"$APP_DIR\"
             git fetch origin main
             git reset --hard origin/main
-
-            # 4. Make deployment script executable and trigger deployment
             chmod +x scripts/deploy.sh
-            export APP_DIR=$APP_DIR
-            ./scripts/deploy.sh $TARGET_IMAGE
-          '"
+            export APP_DIR=\"$APP_DIR\"
+            ./scripts/deploy.sh \"$TARGET_IMAGE\"
+          "
 
       - name: Cleanup SSH Credentials
         if: always()

@@ -137,8 +137,9 @@ def test_api_personas_endpoint():
     assert ratan_data["name"] == "Ratan"
 
 
-def test_api_livekit_join_with_persona():
+def test_api_livekit_join_with_persona(monkeypatch):
     """Verify /api/livekit/join accepts persona and voice in payload."""
+    monkeypatch.setenv("TRANSPORT_MODE", "livekit")
     from app.services.auth_service import create_jwt_token
     client = TestClient(app)
     token = create_jwt_token("test_admin")

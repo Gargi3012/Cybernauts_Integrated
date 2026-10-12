@@ -124,7 +124,8 @@ async def get_available_personas():
 
 @router.post("/api/livekit/join", dependencies=[Depends(rate_limit), Depends(verify_jwt)])
 async def join_livekit_room(request: dict = None):
-    if os.getenv("TRANSPORT_MODE") != "livekit":
+    transport_mode = (os.getenv("TRANSPORT_MODE") or "livekit").strip().lower()
+    if transport_mode not in ("livekit", "webrtc"):
         raise HTTPException(status_code=400, detail="Not in LiveKit mode")
         
     req_data = request or {}
