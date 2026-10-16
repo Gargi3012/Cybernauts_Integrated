@@ -1,0 +1,23 @@
+[Unit]
+Description=Cybernauts Integrated Platform — Lead Intelligence & AI Voice Agent
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/home/ec2-user/apps/cybernauts-integrated
+EnvironmentFile=-/home/ec2-user/apps/cybernauts-integrated/.env
+Environment="PORT=8010"
+Environment="HOST=0.0.0.0"
+Environment="PYTHONPATH=/home/ec2-user/apps/cybernauts-integrated:/home/ec2-user/apps/cybernauts-integrated/Team A:/home/ec2-user/apps/cybernauts-integrated/Team B:/home/ec2-user/apps/cybernauts-integrated/Team A/pillar1"
+ExecStart=/home/ec2-user/apps/cybernauts-integrated/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8010 --workers 1
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

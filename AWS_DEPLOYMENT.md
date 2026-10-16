@@ -1,355 +1,211 @@
 # AWS Deployment Guide — Cybernauts Integrated Platform
 
-This document describes how to deploy the **Cybernauts Integrated Platform** (`Cybernauts_Integrated`) to an **AWS EC2 instance** using **Docker**, **Docker Compose**, **Amazon ECR**, and **GitHub Actions CI/CD**.
+This document describes how to deploy the **Cybernauts Integrated Platform** (`Cybernauts_Integrated`) directly to an existing **AWS EC2 instance** using **GitHub Actions CI/CD over SSH/SCP** and **Linux systemd**, **WITHOUT requiring AWS IAM Access Keys, AWS Secret Access Keys, Amazon ECR, or Docker image builds in GitHub Actions**.
 
 ---
 
 ## 1. Architecture & Deployment Overview
 
 ```
-                                      +---------------------------------------------+
-                                      |             GitHub Repository               |
-                                      |   - Push to `main` or `workflow_dispatch`   |
-                                      +---------------------+-----------------------+
-                                                            |
-                                                            v
-                                      +---------------------------------------------+
-                                      |             GitHub Actions CI/CD            |
-                                      |   1. Lint, Compile & Unit Tests             |
-                                      |   2. Build Docker Image (Python 3.11-slim)   |
-                                      |   3. Push to Private Amazon ECR             |
-                                      |   4. Secure SSH to EC2 via .pem Key         |
-                                      +---------------------+-----------------------+
-                                                            |
-                                      +---------------------+-----------------------+
-                                      |                                             |
-                                      v                                             v
-                      +-------------------------------+             +-------------------------------+
-                      |        Amazon ECR Repo        |             |        AWS EC2 Instance       |
-                      | <account_id>.dkr.ecr.<region> |             |  IP: <ec2-public-ip>          |
-                      |   Tag: <commit-sha> & latest  |             |  Dir: /opt/cybernauts         |
-                      +---------------+---------------+             +---------------+---------------+
-                                      |                                             |
-                                      +------------------- Docker Pull -------------+
-                                                            |
-                                                            v
-                                            +-------------------------------+
-                                            |       Docker Compose App      |
-                                            |  - Port 8000:8000             |
-                                            |  - Non-root user: appuser     |
-                                            |  - Health: /health (HTTP 200) |
-                                            |  - Persistent: leads.db       |
-                                            |  - Persistent: recordings/    |
-                                            +-------------------------------+
+                                  +---------------------------------------------+
+                                  |             GitHub Repository               |
+                                  |   - Push to `main` or `workflow_dispatch`   |
+                                  +---------------------+-----------------------+
+                                                        |
+                                                        v
+                                  +---------------------------------------------+
+                                  |             GitHub Actions CI/CD            |
+                                  |   1. Lint, Compile & Unit Tests (Python 3.11)|
+                                  |   2. Package clean bundle (excludes secrets,|
+                                  |      local DB, 10MB logs, and temp caches)  |
+                                  |   3. Pinned Host-Key Verification (Strict)  |
+                                  |   4. Secure SCP tarball + Pre-extraction    |
+                                  |   5. Isolated systemd script execution      |
+                                  |   6. Automatic cleanup of temporary key     |
+                                  +---------------------+-----------------------+
+                                                        |
+                                                        v  (SSH / SCP)
+                                  +---------------------------------------------+
+                                  |             AWS EC2 Instance                |
+                                  | Host: ec2-43-204-8-94.ap-south-1...         |
+                                  | User: ec2-user                              |
+                                  | Root Dir: /home/ec2-user/apps/              |
+                                  |           cybernauts-integrated/            |
+                                  +---------------------+-----------------------+
+                                                        |
+                        +-------------------------------+-------------------------------+
+                        |                               |                               |
+                        v                               v                               v
+         +-----------------------------+ +-----------------------------+ +-----------------------------+
+         |   [EXISTING] Voice-Pipeline | |     [EXISTING] Flowiz       | |  [NEW] Cybernauts-Integrated|
+         | - Docker container          | | - /var/www/flowiz           | | - /home/ec2-user/apps/      |
+         | - Port 8000                 | | - flowiz.service            | |   cybernauts-integrated     |
+         | - Apache /voice proxy       | | - Port 8008                 | | - cybernauts-integrated.    |
+         | - (UNTOUCHED & PRESERVED)   | | - (UNTOUCHED & PRESERVED)   | |   service                   |
+         +-----------------------------+ +-----------------------------+ | - Dedicated venv            |
+                                                                         | - Port 8010                 |
+                                                                         | - Health: /health (HTTP 200)|
+                                                                         | - Persistent: leads.db      |
+                                                                         +-----------------------------+
 ```
 
 ---
 
-## 2. Prerequisites
+## 2. Why Direct SSH/systemd Deployment?
 
-1. **AWS Account**:
-   - Access to create an **EC2 instance** (e.g., `t3.medium` or `c6i.large` recommended for real-time WebRTC audio pipelines).
-   - Access to create an **Amazon ECR** private repository.
-   - An **IAM user** or **role** with permissions to push to ECR.
-2. **SSH Key Pair**:
-   - Existing key named `cybernautsServices.pem`.
-3. **Domain / DNS / Carrier**:
-   - Public IP or Domain for Plivo / Twilio webhooks, WebSockets, and LiveKit WebRTC.
-4. **GitHub Repository**:
-   - Admin access to configure **GitHub Actions Secrets and Variables**.
+- **No AWS API Credentials Needed**: The deployment uses standard SSH authentication with your existing key (`cybernautsServices.pem`). You do **not** need `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, or IAM console access.
+- **No Amazon ECR or Docker Overhead**: GitHub Actions does not build or push heavy Docker images, saving bandwidth, runner time, and repository costs.
+- **Zero Impact on Existing Applications**:
+  - The `voice-pipeline` container on port **8000** is completely isolated and never touched.
+  - The `flowiz.service` on port **8008** is completely isolated and never touched.
+  - Existing Apache websites and MariaDB databases are untouched.
+- **Isolated Target Directory**: All files, dedicated virtual environment, logs, and databases reside in `/home/ec2-user/apps/cybernauts-integrated`.
 
 ---
 
-## 3. Required GitHub Repository Secrets & Variables
+## 3. Required GitHub Repository Secrets
 
-Navigate to **GitHub Repository** -> **Settings** -> **Secrets and variables** -> **Actions**.
+Configure the following secrets in **GitHub Repository** -> **Settings** -> **Secrets and variables** -> **Actions**:
 
-### Secrets (Confidential)
-
-| Secret Name | Description | Example / Format |
-| :--- | :--- | :--- |
-| `AWS_ACCESS_KEY_ID` | IAM User access key with ECR permissions | `AKIAIOSFODNN7EXAMPLE` |
-| `AWS_SECRET_ACCESS_KEY` | IAM User secret access key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
-| `AWS_REGION` | AWS Region where ECR and EC2 reside | `us-east-1` (or your chosen region) |
-| `ECR_REPOSITORY_NAME` | Name of your Amazon ECR repository | `cybernauts-integrated` |
-| `EC2_HOST` | Public IP address or Elastic IP of EC2 | `54.x.x.x` or `ec2-54-x-x-x.compute-1.amazonaws.com` |
-| `EC2_USER` | SSH user for your EC2 AMI | `ubuntu` (for Ubuntu) or `ec2-user` |
-| `EC2_SSH_KEY` | Full content of `cybernautsServices.pem` | `-----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----` |
+| Secret Name | Required? | Description | Example / Notes |
+| :--- | :--- | :--- | :--- |
+| `EC2_HOST` | **Yes** | Hostname or Public IP of the EC2 instance | `ec2-43-204-8-94.ap-south-1.compute.amazonaws.com` |
+| `EC2_SSH_KEY` | **Yes** | Full contents of your private key file (`cybernautsServices.pem`) | Include both `-----BEGIN RSA PRIVATE KEY-----` and `-----END RSA PRIVATE KEY-----` |
+| `EC2_HOST_KEY` | **Yes** | Independently verified public host key | See Section 3.1 below |
+| `EC2_USERNAME` | No (Optional) | SSH user for the EC2 instance | `ec2-user` (Defaults to `ec2-user` if omitted) |
 
 > [!CAUTION]
-> **Never commit `cybernautsServices.pem` or `.env` to Git.** Store `cybernautsServices.pem` strictly inside GitHub Secrets as `EC2_SSH_KEY` and on your local administrator workstation.
+> **Never commit your private key (`cybernautsServices.pem`) to Git or share it in chats.** It is stored exclusively in GitHub Secrets as `EC2_SSH_KEY`.
 
-### Variables (Non-Sensitive)
+### 3.1 Independently Verified Host Key (`EC2_HOST_KEY`)
 
-| Variable Name | Description | Default |
+To strictly protect against Man-In-The-Middle (MITM) attacks, the CI/CD pipeline does **not** rely on dynamic or unverified network scans. You must obtain the server's public key from a trusted, authenticated channel:
+
+**Trusted Channel Option A — Via Authenticated Shell on the EC2 Server**:
+Log in via Windows CMD using your existing key and read the local server public key:
+```bash
+cat /etc/ssh/ssh_host_ed25519_key.pub
+```
+This outputs: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBnZCTiCtDI0DcRpBU++KUvF1fZv08RcUEbIt5GttwDX`.
+Format the secret value as:
+```
+ec2-43-204-8-94.ap-south-1.compute.amazonaws.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBnZCTiCtDI0DcRpBU++KUvF1fZv08RcUEbIt5GttwDX
+```
+
+**Trusted Channel Option B — AWS Console System Log**:
+In AWS EC2 Console -> Select Instance -> Actions -> Monitor and Troubleshoot -> Get System Log. Search for the SSH host key fingerprints generated during initial cloud-init provisioning.
+
+---
+
+## 4. EC2 Storage & Dependency Footprint
+
+### Root Filesystem Accounting
+- Total Disk: ~10 GB
+- Used: ~8.8 GB
+- Free: ~1.3 GB (~88% utilization)
+
+### Deployment Footprint Breakdown
+1. **Archive Upload & Extraction**: ~3.5 MB tarball, extracts to ~10.5 MB. Tarball is deleted immediately after extraction.
+2. **Virtual Environment Base**: ~20 MB.
+3. **Pip Wheel Downloads & Installation**:
+   - `pip install --no-cache-dir` is strictly used to prevent keeping ~400 MB of wheel archives.
+   - Transient wheel downloads reside in an isolated temporary directory (`${APP_DIR}/tmp`), avoiding `/tmp` partition exhaustion.
+   - Peak temporary space during extraction: ~120–160 MB.
+   - Installed `site-packages`: ~450–550 MB.
+   - Total peak installation requirement: ~700 MB.
+4. **Safety Buffer**: ~300 MB reserved for Flowiz logs, systemd journals, and MariaDB.
+5. **Initial Free Space Threshold**: The deployment script enforces `MIN_INITIAL_FREE_MB=1000` (1.0 GB). If free space is below 1,000 MB, the deployment **aborts immediately before making any changes**, guaranteeing existing applications remain unaffected.
+6. **No Dangerous Cleanup Commands**: Never run `docker system prune`, `rsync --delete`, or broad `rm -rf` on EC2.
+
+---
+
+## 5. Port Allocation & Health Check Verification
+
+| Port | Allocation | Status |
 | :--- | :--- | :--- |
-| `APP_DIR` | Working directory path on EC2 | `/opt/cybernauts` |
+| **8000** | Voice-pipeline (Docker) | **Reserved — DO NOT USE** |
+| **8008** | Flowiz (systemd / Uvicorn) | **Reserved — DO NOT USE** |
+| **8010** | **Cybernauts Integrated Platform** | **Dedicated Production Port** |
 
----
-
-## 4. AWS Infrastructure Setup
-
-### Step 4.1: Create Amazon ECR Repository
-
-Using AWS CLI or Console:
-```bash
-aws ecr create-repository \
-  --repository-name cybernauts-integrated \
-  --image-scanning-configuration scanOnPush=true \
-  --region <aws-region>
-```
-
-### Step 4.2: Launch EC2 Instance
-
-1. **AMI**: Ubuntu Server 22.04 LTS or 24.04 LTS (64-bit x86_64).
-2. **Instance Type**: Minimum `t3.small` (2 vCPU, 2GB RAM); recommended `t3.medium` or `t3.large` for real-time speech synthesis + scraping.
-3. **Key Pair**: Select `cybernautsServices`.
-4. **Storage**: At least 30 GB gp3 SSD.
-5. **Security Group Rules**:
-   - **Port 22 (SSH)**: Source `My IP` or GitHub Actions IP range (or `0.0.0.0/0` if protected by key authentication).
-   - **Port 8000 (HTTP/App)**: Source `0.0.0.0/0` (or restricted behind an Application Load Balancer / Nginx reverse proxy).
-   - **Port 80 / 443**: Source `0.0.0.0/0` (if using Let's Encrypt / Nginx).
-
-### Step 4.3: IAM Policy for GitHub Actions (Least-Privilege)
-
-Attach the following policy to the IAM user used by GitHub Actions (`AWS_ACCESS_KEY_ID`):
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
+### Health Check Behavior (`/health`)
+- Local URL on EC2: `http://127.0.0.1:8010/health`
+- **Lifespan State Tracking**:
+  - Returns **HTTP 503** while the server is booting or if mandatory SQLite databases fail to initialize.
+  - Returns **HTTP 200** once core services are initialized:
+    ```json
     {
-      "Sid": "ECRAuth",
-      "Effect": "Allow",
-      "Action": [
-        "ecr:GetAuthorizationToken"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "ECRRepositoryAccess",
-      "Effect": "Allow",
-      "Action": [
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage",
-        "ecr:PutImage",
-        "ecr:InitiateLayerUpload",
-        "ecr:UploadLayerPart",
-        "ecr:CompleteLayerUpload"
-      ],
-      "Resource": "arn:aws:ecr:<aws-region>:<aws-account-id>:repository/cybernauts-integrated"
+      "status": "ok",
+      "app": "cybernauts-integrated",
+      "version": "2.0.0",
+      "ready": true,
+      "team_a_db": true,
+      "recordings_db": true,
+      "team_b_db": false,
+      "team_b_db_required": false
     }
-  ]
-}
-```
+    ```
+- **Team B PostgreSQL Policy (`team_b_db`)**:
+  - By default, Team B PostgreSQL operates in **graceful degradation** mode (`REQUIRE_TEAM_B_DB=false`) because core lead discovery, browser testing, and SQLite recordings function without it.
+  - If a dedicated PostgreSQL cluster is configured and required, set `REQUIRE_TEAM_B_DB=true` in `.env`. The `/health` endpoint will then return **HTTP 503** until PostgreSQL connectivity is established.
 
 ---
 
-## 5. Initial Server Setup (One-Time EC2 Configuration)
+## 6. Manual EC2 Setup (One-Time Only)
 
-Connect to your EC2 instance via SSH:
-```bash
-chmod 400 cybernautsServices.pem
-ssh -i cybernautsServices.pem ubuntu@<ec2-public-ip>
+Before running the GitHub Actions workflow, perform this one-time step:
+
+### Step 6.1: Connect via SSH from Windows CMD
+```cmd
+ssh -i "C:\Users\hp\Downloads\cybernautsServices.pem" ec2-user@ec2-43-204-8-94.ap-south-1.compute.amazonaws.com
 ```
 
-Run the following initialization commands on EC2:
-
+### Step 6.2: Create Application Directory & Production `.env`
 ```bash
-# 1. Update OS packages
-sudo apt-get update && sudo apt-get upgrade -y
-
-# 2. Install Docker, Docker Compose, AWS CLI, and Git
-sudo apt-get install -y ca-certificates curl gnupg lsb-release git awscli
-
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# 3. Add ubuntu user to docker group (run docker without sudo)
-sudo usermod -aG docker $USER
-newgrp docker
-
-# 4. Create application directory with proper permissions
-sudo mkdir -p /opt/cybernauts
-sudo chown -R $USER:$USER /opt/cybernauts
-
-# 5. Clone repository into /opt/cybernauts
-cd /opt/cybernauts
-git clone https://github.com/<your-org-or-user>/Cybernauts_Integrated.git .
-
-# 6. Make deployment script executable
-chmod +x scripts/deploy.sh
+mkdir -p /home/ec2-user/apps/cybernauts-integrated
+cd /home/ec2-user/apps/cybernauts-integrated
 ```
 
----
-
-## 6. Configuring Server-Side Environment Variables
-
-Create the production `.env` file directly on the EC2 server inside `/opt/cybernauts/.env`:
-
+Create `/home/ec2-user/apps/cybernauts-integrated/.env`:
 ```bash
-cd /opt/cybernauts
-nano .env
-```
-
-Set permissions to restrict read access:
-```bash
+cat << 'EOF' > .env
+PORT=8010
+HOST=0.0.0.0
+ENVIRONMENT=production
+PUBLIC_BASE_URL=https://your-domain-or-proxy.com
+SERVER_BASE_URL=https://your-domain-or-proxy.com
+TRANSPORT_MODE=plivo
+PLIVO_AUTH_ID=your_real_plivo_auth_id
+PLIVO_AUTH_TOKEN=your_real_plivo_auth_token
+PLIVO_PHONE_NUMBER=your_real_plivo_number
+DEEPGRAM_API_KEY=your_real_deepgram_key
+OPENAI_API_KEY=your_real_openai_key
+CARTESIA_API_KEY=your_real_cartesia_key
+JWT_SECRET_KEY=generate_a_secure_random_32_character_key_here
+REQUIRE_TEAM_B_DB=false
+EOF
 chmod 600 .env
 ```
 
-Ensure the following production values are populated:
+---
 
-```ini
-# ---------- Server Settings ----------
-HOST=0.0.0.0
-PORT=8000
-ENVIRONMENT=production
-LOG_LEVEL=INFO
+## 7. Operating & Monitoring the Service
 
-# ---------- Telephony & Public Webhooks ----------
-# Set to your EC2 public domain, ALB URL, or tunnel domain
-PUBLIC_BASE_URL=https://<your-ec2-domain-or-alb>
-SERVER_BASE_URL=https://<your-ec2-domain-or-alb>
-TRANSPORT_MODE=livekit
+The application runs as a standard Linux systemd service: `cybernauts-integrated.service`.
 
-# ---------- LiveKit Cloud WebRTC ----------
-LIVEKIT_URL=wss://<project>.livekit.cloud
-LIVEKIT_API_KEY=<livekit-api-key>
-LIVEKIT_API_SECRET=<livekit-api-secret>
-LIVEKIT_ROOM_NAME=default-voice-room
-
-# ---------- AI Voice & Speech Services ----------
-SARVAM_API_KEY=<your-sarvam-key>
-SARVAM_TTS_VOICE=shreya
-SARVAM_TTS_MODEL=bulbul:v3
-
-GROQ_API_KEY=<your-groq-key>
-GROQ_WHISPER_MODEL=whisper-large-v3-turbo
-
-DEEPGRAM_API_KEY=<your-deepgram-key>
-
-OPENAI_API_KEY=<your-openai-key>
-OPENAI_MODEL=gpt-4o-mini
-
-# ---------- Telecom Carriers (Plivo / Twilio) ----------
-PLIVO_AUTH_ID=<plivo-auth-id>
-PLIVO_AUTH_TOKEN=<plivo-auth-token>
-PLIVO_PHONE_NUMBER=<plivo-phone-number>
-
-# ---------- Persistence Databases ----------
-DATABASE_URL=postgresql+asyncpg://<user>:<password>@<host>/<database>?ssl=require
-```
+- **Check Status**: `sudo systemctl status cybernauts-integrated.service`
+- **Tail Live Logs**: `sudo journalctl -u cybernauts-integrated.service -f`
+- **Recent 50 Lines**: `sudo journalctl -u cybernauts-integrated.service -n 50 --no-pager`
+- **Restart Service**: `sudo systemctl restart cybernauts-integrated.service`
+- **Verify Health**: `curl -i http://127.0.0.1:8010/health`
 
 ---
 
-## 7. First Manual Deployment Walkthrough
+## 8. Local Development (Docker & Compose)
 
-To verify everything on EC2 before relying on CI/CD:
+The repository retains `Dockerfile` and `docker-compose.yml` for local development.
 
+To run locally with Docker:
 ```bash
-cd /opt/cybernauts
-
-# 1. Log in to Amazon ECR (replace <aws-region> and <account-id>)
-aws ecr get-login-password --region <aws-region> | docker login --username AWS --password-stdin <account-id>.dkr.ecr.<aws-region>.amazonaws.com
-
-# 2. Or build locally on the instance for initial testing:
-docker compose build
-
-# 3. Execute the deployment script:
-./scripts/deploy.sh cybernauts-app:latest
-
-# 4. Verify the container is running and healthy:
-docker compose ps
-curl http://localhost:8000/health
-# Expected Output: {"status":"ok"}
+docker compose up --build
 ```
-
----
-
-## 8. How Automated CI/CD Deployments Work
-
-Once GitHub secrets are configured:
-
-1. **Trigger**: Developer pushes code to `main` branch.
-2. **Quality Stage**: GitHub Actions checks out code, runs Python bytecode compilation, and runs persona & context test suites.
-3. **Build Stage**: Builds production Docker image using `Dockerfile`, tags with commit SHA + `latest`, and pushes to Amazon ECR.
-4. **Deploy Stage**: Actions connects to EC2 via SSH using `cybernautsServices.pem` (from `EC2_SSH_KEY`).
-5. **Execution**: EC2 executes `scripts/deploy.sh <ecr-image-uri>`:
-   - Pulls the exact commit image.
-   - Preserves previous container image ID for rollback.
-   - Spins up new container via `docker compose`.
-   - Polls `/health` endpoint for up to 60 seconds.
-   - If healthy: completes successfully.
-   - If failing: automatically rolls back to previous working container.
-
----
-
-## 9. Monitoring, Logs & Troubleshooting
-
-### Check Container Status
-```bash
-docker compose ps
-```
-
-### View Live Real-Time Logs
-```bash
-docker compose logs -f app
-```
-
-### Check Application Health
-```bash
-curl -i http://localhost:8000/health
-# HTTP/1.1 200 OK
-# {"status":"ok"}
-```
-
-### Common Issues & Resolutions
-
-| Issue | Symptom | Resolution |
-| :--- | :--- | :--- |
-| **SSH Connection Timeout** | GitHub Actions fails on `ssh: connect to host ... port 22: Connection timed out` | Check EC2 Security Group inbound rule for port 22. Ensure Elastic IP / public IP is accessible. |
-| **ECR Login Denied** | `no basic auth credentials` | Verify `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` have `ecr:GetAuthorizationToken` permission. |
-| **Health Check Timeout** | `HEALTH CHECK FAILED! Target image did not respond within timeout` | Check `docker compose logs app`. Verify `.env` database and API keys are properly configured. |
-| **Leads Database Permission Error** | `sqlite3.OperationalError: unable to open database file` | Ensure `chmod 666 leads.db` was run so non-root `appuser` (UID 1000) can write to SQLite. |
-| **Missing Static Audio** | Greetings fail to play | Verify `static/audio/greetings/` files exist in repository. Do not add `static/audio` to `.dockerignore`. |
-
----
-
-## 10. Manual Rollback Procedures
-
-If an unexpected production bug occurs, roll back instantly:
-
-```bash
-cd /opt/cybernauts
-
-# 1. View recent images
-docker images
-
-# 2. Run deploy script with previous specific image tag
-./scripts/deploy.sh <account-id>.dkr.ecr.<aws-region>.amazonaws.com/cybernauts-integrated:<previous-commit-sha>
-```
-
----
-
-## 11. Security & Credential Rotation Guidelines
-
-1. **If SSH Key is compromised**:
-   - Generate a new key pair in AWS Console -> EC2 -> Key Pairs (`cybernautsServices-v2`).
-   - Append public key to `~/.ssh/authorized_keys` on EC2, remove the old key.
-   - Update `EC2_SSH_KEY` in GitHub Repository Secrets.
-   - Delete the old key pair in AWS Console.
-2. **If AWS Access Key is compromised**:
-   - Create a new Access Key in IAM Console for the CI/CD user.
-   - Update `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in GitHub Secrets.
-   - Deactivate and delete the old Access Key in IAM.
-3. **Database & API Keys**:
-   - Keep all third-party API keys (Sarvam, Groq, Deepgram, Plivo) strictly inside server-side `/opt/cybernauts/.env`. Never commit them to Git.
+This runs the container locally on `http://localhost:8000` without impacting remote EC2 deployment.

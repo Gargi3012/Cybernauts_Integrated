@@ -33,6 +33,15 @@ from app.db.connection import db_manager
 from loguru import logger
 
 
+# Module-level readiness state for server lifecycle and health checks
+APP_STATE = {
+    "is_ready": False,
+    "db_team_a": False,
+    "db_recordings": False,
+    "db_team_b": False
+}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing unified server lifespan...")
@@ -40,6 +49,7 @@ async def lifespan(app: FastAPI):
     # Initialize Team A SQLite Database
     try:
         team_a_module.init_db()
+        APP_STATE["db_team_a"] = True
         logger.info("Team A SQLite database (leads.db) initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize Team A SQLite database: {e}")
@@ -48,6 +58,7 @@ async def lifespan(app: FastAPI):
     try:
         import recording_manager
         recording_manager.init_recordings_db()
+        APP_STATE["db_recordings"] = True
         logger.info("Call Recordings SQLite database initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize Call Recordings SQLite database: {e}")
@@ -60,6 +71,7 @@ async def lifespan(app: FastAPI):
                 from sqlalchemy import text
                 await db.execute(text("SELECT 1"))
         await asyncio.wait_for(prewarm(), timeout=1.0)
+        APP_STATE["db_team_b"] = True
         logger.info("Team B PostgreSQL database connection pool initialized.")
     except Exception as e:
         logger.warning(f"Team B Database startup notice (degrading gracefully): {e}")
@@ -76,7 +88,41 @@ async def lifespan(app: FastAPI):
             logger.debug(f"Persona audio pre-warm notice: {pw_err}")
     asyncio.create_task(_prewarm_persona_greetings())
 
+    # Sync Team B APP_STATE readiness
+    try:
+        from app.main import APP_STATE as TEAM_B_APP_STATE
+        TEAM_B_APP_STATE["is_ready"] = True
+    except Exception as state_err:
+        logger.debug(f"Team B APP_STATE sync notice: {state_err}")
+
+    # Check Team B database requirement policy
+    # Team B uses PostgreSQL for active streams and multi-agent session records.
+    # By default, PostgreSQL is designed to degrade gracefully (optional) if not provisioned,
+    # but can be enforced as mandatory in production clusters via REQUIRE_TEAM_B_DB=true.
+    require_team_b_db = os.getenv("REQUIRE_TEAM_B_DB", "false").lower() in ("true", "1")
+    APP_STATE["team_b_db_required"] = require_team_b_db
+
+    sqlite_ready = bool(APP_STATE.get("db_team_a") and APP_STATE.get("db_recordings"))
+    team_b_ready = bool(APP_STATE.get("db_team_b")) if require_team_b_db else True
+
+    if sqlite_ready and team_b_ready:
+        APP_STATE["is_ready"] = True
+        logger.info(f"Unified server verified healthy & ready for traffic (Team B DB required: {require_team_b_db}).")
+    else:
+        APP_STATE["is_ready"] = False
+        logger.error(
+            f"Unified server startup incomplete: sqlite_ready={sqlite_ready}, "
+            f"team_b_db={APP_STATE.get('db_team_b')} (required: {require_team_b_db})."
+        )
+
     yield
+
+    APP_STATE["is_ready"] = False
+    try:
+        from app.main import APP_STATE as TEAM_B_APP_STATE
+        TEAM_B_APP_STATE["is_ready"] = False
+    except Exception:
+        pass
 
     logger.info("Shutting down database connection pools...")
     await db_manager.close()
@@ -87,6 +133,35 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
+
+# Production health & readiness check for Cybernauts Integrated platform
+@app.get("/health")
+def health_check():
+    """Readiness & liveness verification endpoint for load balancers & CI/CD deployment."""
+    require_team_b_db = APP_STATE.get("team_b_db_required", False)
+    if not APP_STATE.get("is_ready"):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "unhealthy",
+                "message": "Server initializing or database initialization incomplete",
+                "team_a_db": APP_STATE.get("db_team_a", False),
+                "recordings_db": APP_STATE.get("db_recordings", False),
+                "team_b_db": APP_STATE.get("db_team_b", False),
+                "team_b_db_required": require_team_b_db,
+            }
+        )
+    return {
+        "status": "ok",
+        "app": "cybernauts-integrated",
+        "version": "2.0.0",
+        "ready": True,
+        "team_a_db": APP_STATE.get("db_team_a", False),
+        "recordings_db": APP_STATE.get("db_recordings", False),
+        "team_b_db": APP_STATE.get("db_team_b", False),
+        "team_b_db_required": require_team_b_db,
+    }
 
 # Configure CORS for local development
 app.add_middleware(
@@ -122,9 +197,9 @@ if os.path.exists(static_dir):
 # Include Team A REST API endpoints (/api/search, /api/status, /api/leads, /api/categories)
 app.include_router(team_a_module.app.router)
 
-# Strip out conflicting root redirects and standalone frontend mounts from Team B before including
+# Strip out conflicting root redirects, health check, and standalone frontend mounts from Team B before including
 conflicting_paths = {
-    "/", "/index.html", "/voice", "/voice/", "/voice/frontend",
+    "/", "/index.html", "/health", "/voice", "/voice/", "/voice/frontend",
     "/voice/frontend/", "/voice/frontend/index.html", "/frontend", "/frontend/index.html"
 }
 team_b_app.router.routes = [
