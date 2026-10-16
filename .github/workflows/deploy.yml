@@ -51,6 +51,8 @@ jobs:
           python -m compileall server.py recording_manager.py "Team A" "Team B" routers
 
       - name: Run Core Persona, Context & Health Readiness Tests
+        env:
+          PYTHONPATH: .
         run: |
           pytest "Team B/tests/test_dynamic_personas.py" "Team B/tests/test_sliding_window_and_prompt_optimization.py" "Team B/tests/test_server_health.py" -v
 
