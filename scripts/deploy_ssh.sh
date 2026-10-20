@@ -88,30 +88,52 @@ fi
 chmod 640 leads.db 2>/dev/null || true
 chmod 750 logs data output cookies static/recordings 2>/dev/null || true
 
-# Check for production .env file
+# Check for production .env file — never overwrite, create placeholders, or copy defaults into production
 if [ ! -f ".env" ]; then
-  if [ -f ".env.example" ]; then
-    echo -e "${YELLOW}[NOTICE] .env not found. Creating initial production .env template from .env.example...${NC}"
-    cp .env.example .env
-    # Ensure production environment variables
-    sed -i "s/^PORT=.*/PORT=${APP_PORT}/" .env 2>/dev/null || echo "PORT=${APP_PORT}" >> .env
-    sed -i "s/^ENVIRONMENT=.*/ENVIRONMENT=production/" .env 2>/dev/null || echo "ENVIRONMENT=production" >> .env
-    chmod 600 .env
-    echo -e "${YELLOW}[WARNING] Created initial .env. Please configure real production secrets in ${APP_DIR}/.env!${NC}"
-  else
-    echo -e "${RED}[ERROR] Neither .env nor .env.example found!${NC}"
-    exit 1
-  fi
-else
-  # Ensure PORT is configured to our target port in .env without overwriting other variables
-  if grep -q "^PORT=" .env; then
-    sed -i "s/^PORT=.*/PORT=${APP_PORT}/" .env
-  else
-    echo "PORT=${APP_PORT}" >> .env
-  fi
-  chmod 600 .env
-  echo -e "${GREEN}✓ Preserved existing server-side .env configuration (PORT=${APP_PORT}).${NC}"
+  echo -e "${RED}[FATAL ERROR] Production environment file (.env) was not found in ${APP_DIR}!${NC}"
+  echo -e "${YELLOW}A server-side .env file with real production secrets (including a 32+ character JWT_SECRET) is required.${NC}"
+  echo -e "${YELLOW}Deployment will not copy placeholder credentials or create insecure default configuration in production.${NC}"
+  exit 1
 fi
+
+# Ensure PORT is configured to our target port in .env without overwriting other variables
+if grep -q "^PORT=" .env; then
+  sed -i "s/^PORT=.*/PORT=${APP_PORT}/" .env
+else
+  echo "PORT=${APP_PORT}" >> .env
+fi
+chmod 600 .env
+echo -e "${GREEN}✓ Preserved existing server-side .env configuration (PORT=${APP_PORT}).${NC}"
+
+# Validate server-side JWT_SECRET configuration without ever exposing or printing the secret
+echo -e "Validating server-side JWT_SECRET configuration in .env..."
+ENV_JWT_SECRET=$(grep -E '^[[:space:]]*JWT_SECRET=' .env 2>/dev/null | tail -n 1 | cut -d '=' -f2- | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)
+
+if [ -z "${ENV_JWT_SECRET}" ]; then
+  echo -e "${RED}[FATAL ERROR] 'JWT_SECRET' is missing or empty in ${APP_DIR}/.env!${NC}"
+  echo -e "${YELLOW}A secure secret of at least 32 characters is required before starting or restarting the service.${NC}"
+  exit 1
+fi
+
+if [ "${ENV_JWT_SECRET}" = "change-this-to-a-secure-random-32-byte-secret-in-production" ] || \
+   [ "${ENV_JWT_SECRET}" = "your_jwt_secret_here" ] || \
+   [ "${ENV_JWT_SECRET}" = "super-secret-key" ] || \
+   [ "${ENV_JWT_SECRET}" = "supersecretflowizkey2026" ] || \
+   [ "${ENV_JWT_SECRET}" = "dev-insecure-jwt-secret-key-32bytes-min!!" ]; then
+  echo -e "${RED}[FATAL ERROR] 'JWT_SECRET' in ${APP_DIR}/.env is set to an insecure placeholder value!${NC}"
+  echo -e "${YELLOW}Replace placeholder credentials with a cryptographically secure random 32+ character secret.${NC}"
+  exit 1
+fi
+
+JWT_SECRET_LEN=${#ENV_JWT_SECRET}
+if [ "${JWT_SECRET_LEN}" -lt 32 ]; then
+  echo -e "${RED}[FATAL ERROR] 'JWT_SECRET' in ${APP_DIR}/.env is too short (${JWT_SECRET_LEN} chars; minimum is 32)!${NC}"
+  echo -e "${YELLOW}HMAC-SHA256 (RFC 7518 Section 3.2) requires at least 256 bits (32 characters).${NC}"
+  exit 1
+fi
+
+unset ENV_JWT_SECRET
+echo -e "${GREEN}✓ Verified strong JWT_SECRET (${JWT_SECRET_LEN} characters) in server-side .env.${NC}"
 
 # ── 5. Setup Python Virtual Environment & Install Dependencies ───────────────
 echo -e "${BLUE}[STEP 4/6] Managing dedicated Python virtual environment...${NC}"
@@ -140,7 +162,12 @@ export TMPDIR="${APP_DIR}/tmp"
 
 echo -e "Installing / updating dependencies with --no-cache-dir to conserve disk space..."
 "${VENV_DIR}/bin/pip" install --no-cache-dir --upgrade pip setuptools wheel
-"${VENV_DIR}/bin/pip" install --no-cache-dir -r requirements.txt
+PROD_REQ_FILE="${APP_DIR}/requirements-prod.txt"
+if [ ! -f "${PROD_REQ_FILE}" ]; then
+  PROD_REQ_FILE="${APP_DIR}/requirements.txt"
+fi
+echo -e "Using production requirements: ${PROD_REQ_FILE}"
+"${VENV_DIR}/bin/pip" install --no-cache-dir -r "${PROD_REQ_FILE}"
 
 # Clean up isolated pip temporary directory
 rm -rf "${APP_DIR}/tmp"

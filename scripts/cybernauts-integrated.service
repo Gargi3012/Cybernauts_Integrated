@@ -8,6 +8,7 @@ User=ec2-user
 Group=ec2-user
 WorkingDirectory=/home/ec2-user/apps/cybernauts-integrated
 EnvironmentFile=-/home/ec2-user/apps/cybernauts-integrated/.env
+Environment="ENVIRONMENT=production"
 Environment="PORT=8010"
 Environment="HOST=0.0.0.0"
 Environment="PYTHONPATH=/home/ec2-user/apps/cybernauts-integrated:/home/ec2-user/apps/cybernauts-integrated/Team A:/home/ec2-user/apps/cybernauts-integrated/Team B:/home/ec2-user/apps/cybernauts-integrated/Team A/pillar1"

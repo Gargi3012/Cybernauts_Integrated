@@ -180,7 +180,7 @@ PLIVO_PHONE_NUMBER=your_real_plivo_number
 DEEPGRAM_API_KEY=your_real_deepgram_key
 OPENAI_API_KEY=your_real_openai_key
 CARTESIA_API_KEY=your_real_cartesia_key
-JWT_SECRET_KEY=generate_a_secure_random_32_character_key_here
+JWT_SECRET=generate_a_secure_random_32_character_key_here
 REQUIRE_TEAM_B_DB=false
 EOF
 chmod 600 .env

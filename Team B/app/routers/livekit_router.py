@@ -16,7 +16,7 @@ frontend_websockets = []
 
 # --- Security Dependencies ---
 security = HTTPBearer()
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key")
+from app.services.auth_service import get_jwt_secret
 
 rate_limit_records = defaultdict(list)
 RATE_LIMIT_REQUESTS = 5
@@ -40,8 +40,9 @@ async def rate_limit(request: Request):
 
 async def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
+    secret = get_jwt_secret()
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
         logger.info(f"SECURITY: Successful authentication for user {payload.get('sub', 'unknown')} on /api/livekit/join")
         return payload
     except jwt.ExpiredSignatureError:

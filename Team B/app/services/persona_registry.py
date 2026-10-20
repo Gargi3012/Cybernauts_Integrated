@@ -44,7 +44,7 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         tone="Warm, Conversational & Approachable",
         accent="Indian English / Hinglish",
         avatar="👩",
-        greeting_en="Hi, this is Shreya from Flowiz and Cybernauts. I'm calling to discuss workflow automation and voice AI solutions—do you have a quick minute?",
+        greeting_en="Hi, Shreya here from Flowiz. Got a minute to talk automation?",
         greeting_hi="नमस्ते, मैं Flowiz से Shreya बोल रही हूँ। मैं आपके बिज़नेस वर्कफ़्लो ऑटोमेशन के बारे में बात करने के लिए कॉल कर रही हूँ—क्या आपके पास एक मिनट है?",
         greeting_hinglish="Hi, main Flowiz se Shreya bol rahi hoon. Main aapke business workflow automation ke baare me baat karne ke liye call kar rahi hoon—kya aapke paas ek minute hai?",
         hindi_verb="रही हूँ",
@@ -61,7 +61,7 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         tone="Calm, Clear & Supportive",
         accent="Polite Indian English / Hindi",
         avatar="👩‍💼",
-        greeting_en="Hi, this is Ritu from Flowiz and Cybernauts. I'm calling to discuss automating your business workflows—do you have a quick minute?",
+        greeting_en="Hi, Ritu here from Flowiz. Got a minute to talk automation?",
         greeting_hi="नमस्ते, मैं Flowiz से Ritu बोल रही हूँ। मैं आपके बिज़नेस ऑपरेशन्स ऑटोमेशन के बारे में बात करने के लिए कॉल कर रही हूँ—क्या आपके पास एक मिनट है?",
         greeting_hinglish="Hi, main Flowiz se Ritu bol rahi hoon. Main aapke business operations automation ke baare me baat karne ke liye call kar rahi hoon—kya aapke paas ek minute hai?",
         hindi_verb="रही हूँ",
@@ -78,7 +78,7 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         tone="Professional, Confident & Authoritative",
         accent="Corporate Indian English / Hinglish",
         avatar="👨",
-        greeting_en="Hi, this is Ratan from Flowiz and Cybernauts. I'm calling to discuss automating your business workflows—do you have a quick minute?",
+        greeting_en="Hi, Ratan here from Flowiz. Got a minute to talk automation?",
         greeting_hi="नमस्ते, मैं Flowiz से Ratan बोल रहा हूँ। मैं आपके बिज़नेस वर्कफ़्लो ऑटोमेशन के बारे में बात करने के लिए कॉल कर रहा हूँ—क्या आपके पास एक मिनट है?",
         greeting_hinglish="Hi, main Flowiz se Ratan bol raha hoon. Main aapke business workflow automation ke baare me baat karne ke liye call kar raha hoon—kya aapke paas ek minute hai?",
         hindi_verb="रहा हूँ",
@@ -95,7 +95,7 @@ CANONICAL_PERSONAS: Dict[str, Persona] = {
         tone="Energetic, Sharp & Modern",
         accent="Modern Indian Tech Hinglish",
         avatar="👨‍💻",
-        greeting_en="Hey, this is Manan from Flowiz and Cybernauts. I'm calling to discuss automating your workflows—do you have a quick minute?",
+        greeting_en="Hi, Manan here from Flowiz. Got a minute to talk automation?",
         greeting_hi="नमस्ते, मैं Flowiz से Manan बोल रहा हूँ। मैं आपके वर्कफ़्लो ऑटोमेशन के बारे में बात करने के लिए कॉल कर रहा हूँ—क्या आपके पास एक मिनट है?",
         greeting_hinglish="Hey, main Flowiz se Manan bol raha hoon. Main aapke workflow automation ke baare me baat karne ke liye call kar raha hoon—kya aapke paas ek minute hai?",
         hindi_verb="रहा हूँ",
@@ -216,19 +216,16 @@ def resolve_opening_greeting(
         if m:
             return m.group(1).strip()
 
-    # 2. Outbound company context specified
-    if contact and c_name:
-        return f"Hi {contact}! This is {p_name} from Flowiz and Cybernauts. I'm reaching out regarding {c_name}—do you have a quick moment to speak?"
-    if contact:
-        return f"Hi {contact}! This is {p_name} from Flowiz and Cybernauts. Do you have a brief moment to speak?"
-    if c_name and c_name.lower() not in ("manual telecom call", "there", "unknown"):
-        return f"Hello! This is {p_name} from Flowiz and Cybernauts. I'm reaching out regarding {c_name}—do you have a quick moment to speak?"
-    if c_dict:
-        return f"Hello! This is {p_name} from Flowiz and Cybernauts. Do you have a brief moment to speak about automating your operations?"
+    # 2. Default opening for all calls without a custom script.
+    # Contact/company/returning-customer context is intentionally NOT spoken in the
+    # opening line; the short Flowiz-only greeting is used for every persona.
+    short_greeting = f"Hi, {p_name} here from Flowiz. Got a minute to talk automation?"
+    if contact or c_name or c_dict:
+        return short_greeting
 
     # 3. Returning customer summary
     if previous_summary and previous_summary.strip():
-        return f"Welcome back! This is {p_name} from Flowiz and Cybernauts. How may I assist you today?"
+        return short_greeting
 
     # 4. Inbound / General fallback
     return persona.greeting_en

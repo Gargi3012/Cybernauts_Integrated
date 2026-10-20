@@ -50,11 +50,11 @@ jobs:
         run: |
           python -m compileall server.py recording_manager.py "Team A" "Team B" routers
 
-      - name: Run Core Persona, Context & Health Readiness Tests
+      - name: Run Core Persona, Context, Health & Security Tests
         env:
           PYTHONPATH: .
         run: |
-          pytest "Team B/tests/test_dynamic_personas.py" "Team B/tests/test_sliding_window_and_prompt_optimization.py" "Team B/tests/test_server_health.py" -v
+          pytest "Team B/tests/test_dynamic_personas.py" "Team B/tests/test_sliding_window_and_prompt_optimization.py" "Team B/tests/test_server_health.py" "Team B/tests/test_jwt_config.py" -v
 
   # ── STAGE 2: Secure Direct Deployment to AWS EC2 over SSH ─────────────────
   deploy:
@@ -107,6 +107,11 @@ jobs:
       - name: Build Clean Deployment Bundle
         run: |
           echo "Packaging application bundle (excluding git metadata, logs, local databases, and temporary caches)..."
+          OPTIONAL_INPUTS=()
+          if [ -d "data" ]; then
+            OPTIONAL_INPUTS+=("data")
+          fi
+
           tar -czf deploy_bundle.tar.gz \
             --exclude='.git' \
             --exclude='.github' \
@@ -135,7 +140,7 @@ jobs:
             --exclude='output/*' \
             --exclude='cookies/*' \
             --exclude='static/recordings/*' \
-            server.py recording_manager.py requirements.txt .env.example routers static scripts data "Team A" "Team B"
+            server.py recording_manager.py requirements.txt requirements-prod.txt .env.example routers static scripts "Team A" "Team B" ${OPTIONAL_INPUTS[@]+"${OPTIONAL_INPUTS[@]}"}
 
           echo "Deployment bundle created:"
           ls -lh deploy_bundle.tar.gz

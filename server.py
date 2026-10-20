@@ -42,10 +42,26 @@ APP_STATE = {
 }
 
 
+def validate_production_configuration():
+    """
+    Validate critical security configuration on server startup.
+    In production environments (ENVIRONMENT=production/prod), strictly ensures that required
+    secrets (such as JWT_SECRET) are securely configured and compliant with RFC 7518.
+    Fails server startup immediately if required production secrets are missing or insecure.
+    """
+    env = os.getenv("ENVIRONMENT", "").strip().lower()
+    if env in ("production", "prod"):
+        from app.services.auth_service import get_jwt_secret
+        get_jwt_secret()  # Strictly raises RuntimeError or ValueError
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing unified server lifespan...")
     
+    # 0. Validate production security configuration
+    validate_production_configuration()
+
     # Initialize Team A SQLite Database
     try:
         team_a_module.init_db()
@@ -82,7 +98,7 @@ async def lifespan(app: FastAPI):
             from app.adapters.pipecat.sarvam_tts_service import prewarm_tts_audio
             from app.services.persona_registry import CANONICAL_PERSONAS
             for p_id, p_obj in CANONICAL_PERSONAS.items():
-                await prewarm_tts_audio(p_obj.greeting_en, voice=p_obj.voice, sample_rate=8000)
+                await prewarm_tts_audio(p_obj.greeting_en, voice=p_obj.voice, sample_rate=16000)
             logger.info("Canonical persona greeting audios pre-warmed in memory.")
         except Exception as pw_err:
             logger.debug(f"Persona audio pre-warm notice: {pw_err}")
