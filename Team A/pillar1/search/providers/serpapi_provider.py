@@ -1,27 +1,3 @@
-"""
-search/providers/serpapi_provider.py
-=====================================
-SerpAPI provider — uses the official SerpAPI REST endpoint.
-
-Config keys
------------
-SERPAPI_KEY           : API key (required, read from os.getenv or config)
-ENABLE_SERPAPI        : bool flag (default True)
-MAX_RESULTS_PER_QUERY : max results per call (default 10)
-
-Failover behaviour
-------------------
-- Missing key      → ProviderUnavailable at is_available() time
-- HTTP 429 / quota → ProviderUnavailable raised from search()
-- Network error    → ProviderUnavailable raised from search()
-- Any other error  → ProviderUnavailable raised from search()
-
-Connection
-----------
-Direct HTTP connection via requests with timeout and direct routing
-(bypasses rotating proxy pool to prevent proxy failure cascading).
-"""
-
 from __future__ import annotations
 
 import logging
@@ -49,14 +25,13 @@ class SerpApiProvider(SearchProvider):
         supports_pagination  = True,
         supports_snippets    = True,
         supports_titles      = True,
-        supports_rate_limit  = True,   # SerpAPI has a monthly quota
+        supports_rate_limit  = True,
         max_results_per_page = 10,
     )
 
     _BASE_URL = "https://serpapi.com/search.json"
 
     def __init__(self, session: requests.Session | None = None, **kwargs: Any):
-        # Direct HTTP session (bypasses local rotating proxy pool)
         self._session = session or requests.Session()
         self._session.trust_env = False
 
@@ -72,29 +47,21 @@ class SerpApiProvider(SearchProvider):
 
     @staticmethod
     def _safe_error_detail(exc: Exception | str, api_key: str) -> str:
-        """Redact API credentials echoed by HTTP client exception URLs."""
         detail = str(exc)
         if api_key:
             detail = detail.replace(api_key, "[REDACTED]")
         return re.sub(r"(api_key=)[^&\s)]+", r"\1[REDACTED]", detail, flags=re.I)
 
-    # ── Availability ──────────────────────────────────────────────────────────
-
     def is_available(self) -> bool:
-        api_key = os.getenv("SERPAPI_KEY") or getattr(config, "SERPAPI_KEY", "")
-        return bool(
-            getattr(config, "ENABLE_SERPAPI", True)
-            and api_key
-        )
-
-    # ── Search ────────────────────────────────────────────────────────────────
+        api_key = (os.getenv("SERPAPI_KEY") or getattr(config, "SERPAPI_KEY", "")).strip()
+        return bool(getattr(config, "ENABLE_SERPAPI", True) and api_key)
 
     def search(
         self,
         request_or_query: Request | str,
         max_results: int = 10,
         page: int = 0,
-        deadline = None,
+        deadline=None,
     ) -> list[SearchResult]:
         if isinstance(request_or_query, Request):
             query = request_or_query.query or ""
@@ -111,7 +78,7 @@ class SerpApiProvider(SearchProvider):
                 raise DeadlineExceeded("SerpAPI deadline budget exhausted")
             req_timeout = min(req_timeout, max(1.0, rem))
 
-        api_key = os.getenv("SERPAPI_KEY") or getattr(config, "SERPAPI_KEY", "")
+        api_key = (os.getenv("SERPAPI_KEY") or getattr(config, "SERPAPI_KEY", "")).strip()
         if not (getattr(config, "ENABLE_SERPAPI", True) and api_key):
             self._log_outcome("AUTH_ERROR", "SERPAPI_KEY not set or ENABLE_SERPAPI=False")
             raise ProviderUnavailable(self.name, "SERPAPI_KEY not set or ENABLE_SERPAPI=False")
@@ -159,7 +126,6 @@ class SerpApiProvider(SearchProvider):
             self._log_outcome("PARSER_ERROR", f"Failed to parse JSON: {exc}")
             raise ProviderParseError(self.name, f"invalid JSON response: {exc}") from exc
 
-        # SerpAPI returns an error field when something goes wrong
         if "error" in data:
             err_msg = str(data["error"])
             err_lower = err_msg.lower()
