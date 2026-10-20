@@ -54,6 +54,8 @@ def preload_static_persona_greetings() -> int:
     if not os.path.exists(greetings_dir):
         return 0
 
+    plivo_dir = os.path.join(greetings_dir, "plivo_8k")
+
     try:
         from app.services.persona_registry import CANONICAL_PERSONAS, resolve_opening_greeting
     except Exception as e:
@@ -66,74 +68,136 @@ def preload_static_persona_greetings() -> int:
         model = p_obj.model
 
         # 1. Default greeting
-        def_path = os.path.join(greetings_dir, f"{pid}_default.wav")
-        if os.path.exists(def_path):
+        def_path_16k = os.path.join(greetings_dir, f"{pid}_default.wav")
+        def_path_8k = os.path.join(plivo_dir, f"{pid}_default.wav")
+
+        pcm_16k = None
+        rate_16k = 16000
+        ch_16k = 1
+        if os.path.exists(def_path_16k):
             try:
-                with wave.open(def_path, "rb") as w:
-                    rate = w.getframerate()
-                    ch = w.getnchannels()
-                    pcm_8k = w.readframes(w.getnframes())
-                pcm_16k = audioop.ratecv(pcm_8k, 2, ch, rate, 16000, None)[0]
-
-                def_texts = {
-                    p_obj.greeting_en.strip(),
-                    resolve_opening_greeting(pid).strip(),
-                    f"Hello, this is {p_obj.name} from Flowiz and Cybernauts. How can I help you today?",
-                    f"Hello! This is {p_obj.name} from Flowiz and Cybernauts.",
-                    p_obj.greeting_hi.strip(),
-                    p_obj.greeting_hinglish.strip(),
-                }
-                for txt in def_texts:
-                    _TTS_AUDIO_CACHE[f"{voice}:{model}:8000:{txt}"] = (pcm_8k, 8000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:{model}:16000:{txt}"] = (pcm_16k, 16000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:{model}:{txt}"] = (pcm_16k, 16000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:8000:{txt}"] = (pcm_8k, 8000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:16000:{txt}"] = (pcm_16k, 16000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:{txt}"] = (pcm_16k, 16000, ch)
-
-                _TTS_AUDIO_CACHE[f"{pid}_default:8000"] = (pcm_8k, 8000, ch)
-                _TTS_AUDIO_CACHE[f"{pid}_default:16000"] = (pcm_16k, 16000, ch)
-                _TTS_AUDIO_CACHE[f"{pid}_default"] = (pcm_16k, 16000, ch)
-                _TTS_AUDIO_CACHE[f"{voice}_default:8000"] = (pcm_8k, 8000, ch)
-                _TTS_AUDIO_CACHE[f"{voice}_default:16000"] = (pcm_16k, 16000, ch)
-                _TTS_AUDIO_CACHE[f"{voice}_default"] = (pcm_16k, 16000, ch)
-                loaded += 1
+                with wave.open(def_path_16k, "rb") as w:
+                    rate_16k = w.getframerate()
+                    ch_16k = w.getnchannels()
+                    pcm_16k = w.readframes(w.getnframes())
+                if rate_16k != 16000:
+                    pcm_16k = audioop.ratecv(pcm_16k, 2, ch_16k, rate_16k, 16000, None)[0]
+                    rate_16k = 16000
             except Exception as e:
-                logger.warning(f"[VOICE_ENGINE] Failed loading {def_path}: {e}")
+                logger.warning(f"[VOICE_ENGINE] Failed loading 16k default greeting {def_path_16k}: {e}")
+
+        pcm_8k = None
+        rate_8k = 8000
+        ch_8k = 1
+        if os.path.exists(def_path_8k):
+            try:
+                with wave.open(def_path_8k, "rb") as w:
+                    rate_8k = w.getframerate()
+                    ch_8k = w.getnchannels()
+                    pcm_8k = w.readframes(w.getnframes())
+                if rate_8k != 8000:
+                    pcm_8k = audioop.ratecv(pcm_8k, 2, ch_8k, rate_8k, 8000, None)[0]
+                    rate_8k = 8000
+            except Exception as e:
+                logger.warning(f"[VOICE_ENGINE] Failed loading 8k Plivo default greeting {def_path_8k}: {e}")
+        elif pcm_16k is not None:
+            # Fallback if plivo_8k file is missing: resample 16k to genuine 8k
+            pcm_8k = audioop.ratecv(pcm_16k, 2, ch_16k, rate_16k, 8000, None)[0]
+            rate_8k = 8000
+            ch_8k = ch_16k
+
+        if pcm_16k is not None or pcm_8k is not None:
+            def_texts = {
+                p_obj.greeting_en.strip(),
+                f"Hello, this is {p_obj.name} from Flowiz and Cybernauts. How can I help you today?",
+                f"Hello! This is {p_obj.name} from Flowiz and Cybernauts.",
+                p_obj.greeting_hi.strip(),
+                p_obj.greeting_hinglish.strip(),
+            }
+            for txt in def_texts:
+                if pcm_8k is not None:
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:8000:{txt}"] = (pcm_8k, 8000, ch_8k)
+                    _TTS_AUDIO_CACHE[f"{voice}:8000:{txt}"] = (pcm_8k, 8000, ch_8k)
+                if pcm_16k is not None:
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:16000:{txt}"] = (pcm_16k, 16000, ch_16k)
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:{txt}"] = (pcm_16k, 16000, ch_16k)
+                    _TTS_AUDIO_CACHE[f"{voice}:16000:{txt}"] = (pcm_16k, 16000, ch_16k)
+                    _TTS_AUDIO_CACHE[f"{voice}:{txt}"] = (pcm_16k, 16000, ch_16k)
+
+            if pcm_8k is not None:
+                _TTS_AUDIO_CACHE[f"{pid}_default:8000"] = (pcm_8k, 8000, ch_8k)
+                _TTS_AUDIO_CACHE[f"{voice}_default:8000"] = (pcm_8k, 8000, ch_8k)
+            if pcm_16k is not None:
+                _TTS_AUDIO_CACHE[f"{pid}_default:16000"] = (pcm_16k, 16000, ch_16k)
+                _TTS_AUDIO_CACHE[f"{pid}_default"] = (pcm_16k, 16000, ch_16k)
+                _TTS_AUDIO_CACHE[f"{voice}_default:16000"] = (pcm_16k, 16000, ch_16k)
+                _TTS_AUDIO_CACHE[f"{voice}_default"] = (pcm_16k, 16000, ch_16k)
+            loaded += 1
 
         # 2. Outbound greeting
-        out_path = os.path.join(greetings_dir, f"{pid}_outbound.wav")
-        if os.path.exists(out_path):
+        out_path_16k = os.path.join(greetings_dir, f"{pid}_outbound.wav")
+        out_path_8k = os.path.join(plivo_dir, f"{pid}_outbound.wav")
+
+        pcm_out_16k = None
+        rate_out_16k = 16000
+        ch_out_16k = 1
+        if os.path.exists(out_path_16k):
             try:
-                with wave.open(out_path, "rb") as w:
-                    rate = w.getframerate()
-                    ch = w.getnchannels()
-                    pcm_8k = w.readframes(w.getnframes())
-                pcm_16k = audioop.ratecv(pcm_8k, 2, ch, rate, 16000, None)[0]
-
-                out_texts = {
-                    resolve_opening_greeting(pid, company_context={"company_name": "your operations"}).strip(),
-                    resolve_opening_greeting(pid, company_context={"company_name": "your business"}).strip(),
-                    f"Hello! This is {p_obj.name} from Flowiz and Cybernauts. Do you have a brief moment to speak about automating your operations?",
-                    f"Hello! This is {p_obj.name} from Flowiz and Cybernauts. I'm reaching out regarding your business—do you have a quick moment to speak?",
-                }
-                for txt in out_texts:
-                    _TTS_AUDIO_CACHE[f"{voice}:{model}:8000:{txt}"] = (pcm_8k, 8000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:{model}:16000:{txt}"] = (pcm_16k, 16000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:{model}:{txt}"] = (pcm_16k, 16000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:8000:{txt}"] = (pcm_8k, 8000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:16000:{txt}"] = (pcm_16k, 16000, ch)
-                    _TTS_AUDIO_CACHE[f"{voice}:{txt}"] = (pcm_16k, 16000, ch)
-
-                _TTS_AUDIO_CACHE[f"{pid}_outbound:8000"] = (pcm_8k, 8000, ch)
-                _TTS_AUDIO_CACHE[f"{pid}_outbound:16000"] = (pcm_16k, 16000, ch)
-                _TTS_AUDIO_CACHE[f"{pid}_outbound"] = (pcm_16k, 16000, ch)
-                _TTS_AUDIO_CACHE[f"{voice}_outbound:8000"] = (pcm_8k, 8000, ch)
-                _TTS_AUDIO_CACHE[f"{voice}_outbound:16000"] = (pcm_16k, 16000, ch)
-                _TTS_AUDIO_CACHE[f"{voice}_outbound"] = (pcm_16k, 16000, ch)
-                loaded += 1
+                with wave.open(out_path_16k, "rb") as w:
+                    rate_out_16k = w.getframerate()
+                    ch_out_16k = w.getnchannels()
+                    pcm_out_16k = w.readframes(w.getnframes())
+                if rate_out_16k != 16000:
+                    pcm_out_16k = audioop.ratecv(pcm_out_16k, 2, ch_out_16k, rate_out_16k, 16000, None)[0]
+                    rate_out_16k = 16000
             except Exception as e:
-                logger.warning(f"[VOICE_ENGINE] Failed loading {out_path}: {e}")
+                logger.warning(f"[VOICE_ENGINE] Failed loading 16k outbound greeting {out_path_16k}: {e}")
+
+        pcm_out_8k = None
+        rate_out_8k = 8000
+        ch_out_8k = 1
+        if os.path.exists(out_path_8k):
+            try:
+                with wave.open(out_path_8k, "rb") as w:
+                    rate_out_8k = w.getframerate()
+                    ch_out_8k = w.getnchannels()
+                    pcm_out_8k = w.readframes(w.getnframes())
+                if rate_out_8k != 8000:
+                    pcm_out_8k = audioop.ratecv(pcm_out_8k, 2, ch_out_8k, rate_out_8k, 8000, None)[0]
+                    rate_out_8k = 8000
+            except Exception as e:
+                logger.warning(f"[VOICE_ENGINE] Failed loading 8k Plivo outbound greeting {out_path_8k}: {e}")
+        elif pcm_out_16k is not None:
+            # Fallback if plivo_8k file is missing: resample 16k to genuine 8k
+            pcm_out_8k = audioop.ratecv(pcm_out_16k, 2, ch_out_16k, rate_out_16k, 8000, None)[0]
+            rate_out_8k = 8000
+            ch_out_8k = ch_out_16k
+
+        if pcm_out_16k is not None or pcm_out_8k is not None:
+            out_texts = {
+                resolve_opening_greeting(pid).strip(),
+                f"Hello! This is {p_obj.name} from Flowiz and Cybernauts. Do you have a brief moment to speak about automating your operations?",
+                f"Hello! This is {p_obj.name} from Flowiz and Cybernauts. I'm reaching out regarding your business—do you have a quick moment to speak?",
+            }
+            for txt in out_texts:
+                if pcm_out_8k is not None:
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:8000:{txt}"] = (pcm_out_8k, 8000, ch_out_8k)
+                    _TTS_AUDIO_CACHE[f"{voice}:8000:{txt}"] = (pcm_out_8k, 8000, ch_out_8k)
+                if pcm_out_16k is not None:
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:16000:{txt}"] = (pcm_out_16k, 16000, ch_out_16k)
+                    _TTS_AUDIO_CACHE[f"{voice}:{model}:{txt}"] = (pcm_out_16k, 16000, ch_out_16k)
+                    _TTS_AUDIO_CACHE[f"{voice}:16000:{txt}"] = (pcm_out_16k, 16000, ch_out_16k)
+                    _TTS_AUDIO_CACHE[f"{voice}:{txt}"] = (pcm_out_16k, 16000, ch_out_16k)
+
+            if pcm_out_8k is not None:
+                _TTS_AUDIO_CACHE[f"{pid}_outbound:8000"] = (pcm_out_8k, 8000, ch_out_8k)
+                _TTS_AUDIO_CACHE[f"{voice}_outbound:8000"] = (pcm_out_8k, 8000, ch_out_8k)
+            if pcm_out_16k is not None:
+                _TTS_AUDIO_CACHE[f"{pid}_outbound:16000"] = (pcm_out_16k, 16000, ch_out_16k)
+                _TTS_AUDIO_CACHE[f"{pid}_outbound"] = (pcm_out_16k, 16000, ch_out_16k)
+                _TTS_AUDIO_CACHE[f"{voice}_outbound:16000"] = (pcm_out_16k, 16000, ch_out_16k)
+                _TTS_AUDIO_CACHE[f"{voice}_outbound"] = (pcm_out_16k, 16000, ch_out_16k)
+            loaded += 1
 
     logger.info(f"[VOICE_ENGINE] Preloaded static persona greetings ({loaded} personas, {len(_TTS_AUDIO_CACHE)} keys in cache).")
     return loaded
@@ -503,19 +567,11 @@ class SarvamTTSService(TTSService):
             or _TTS_AUDIO_CACHE.get(f"{self.voice}:{clean_text}")
         )
 
-        if not cached_entry:
-            # Check for canonical persona greeting matches
-            from app.services.persona_registry import CANONICAL_PERSONAS
-            p_obj = CANONICAL_PERSONAS.get(self.voice)
-            if p_obj and ("flowiz" in clean_text.lower() or p_obj.name.lower() in clean_text.lower()):
-                is_outbound = "reaching out" in clean_text.lower() or "moment to speak" in clean_text.lower() or "operations" in clean_text.lower()
-                variant = "outbound" if is_outbound else "default"
-                cached_entry = (
-                    _TTS_AUDIO_CACHE.get(f"{self.voice}_{variant}:{req_sample_rate}")
-                    or _TTS_AUDIO_CACHE.get(f"{self.voice}_{variant}")
-                    or _TTS_AUDIO_CACHE.get(f"{self.voice}_default:{req_sample_rate}")
-                    or _TTS_AUDIO_CACHE.get(f"{self.voice}_default")
-                )
+        # NOTE: The fuzzy persona-greeting fallback (matching on agent name / "Flowiz") was
+        # intentionally removed. It was serving old prerecorded WAV files for any greeting
+        # text that merely mentioned the agent or Flowiz, causing the wrong audio to play
+        # when the default greeting text was changed. The exact-text cache above is kept;
+        # unrecognised text falls through to live Sarvam synthesis below.
 
         if cached_entry:
             cached_pcm, cached_rate, cached_channels = cached_entry

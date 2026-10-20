@@ -16,6 +16,7 @@ from loguru import logger
 
 # Base directory for greetings
 STATIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "static", "audio", "greetings"))
+PLIVO_STATIC_DIR = os.path.join(STATIC_DIR, "plivo_8k")
 
 # In-memory RAM cache for pre-rendered mu-law bytes: key -> bytes
 _ULAW_RAM_CACHE: Dict[str, bytes] = {}
@@ -56,8 +57,9 @@ def get_greeting_ulaw_bytes(
     
     Priority:
     1. Memory cache (_TTS_AUDIO_CACHE) from pre-warming (ring-time synthesis)
-    2. Static pre-rendered .ulaw file for persona variant (outbound vs default)
-    3. Static pre-rendered .ulaw file for shreya_default as fallback
+    2. Static dedicated 8kHz WAV from plivo_8k directory
+    3. Static pre-rendered .ulaw file for persona variant (outbound vs default)
+    4. Static pre-rendered .ulaw file for shreya_default as fallback
     """
     clean_p = (persona_id or "shreya").strip().lower()
     variant = "outbound" if company_context else "default"
@@ -67,6 +69,7 @@ def get_greeting_ulaw_bytes(
     from app.adapters.pipecat.sarvam_tts_service import _TTS_AUDIO_CACHE
     from app.services.persona_registry import get_persona
     import audioop
+    import wave
 
     p_obj = get_persona(clean_p)
     if greeting_text and greeting_text.strip():
@@ -77,18 +80,34 @@ def get_greeting_ulaw_bytes(
         if cached_entry:
             pcm_bytes, rate, channels = cached_entry
             try:
-                # Convert 16-bit PCM to 8kHz mu-law
+                if rate != 8000:
+                    pcm_bytes = audioop.ratecv(pcm_bytes, 2, channels, rate, 8000, None)[0]
                 ulaw_data = audioop.lin2ulaw(pcm_bytes, 2)
                 logger.info(f"[INSTANT_GREETING] Using ring-warmed dynamic custom audio ({len(ulaw_data)} bytes) for {clean_p}")
                 return ulaw_data, "dynamic_cache"
             except Exception as e:
                 logger.warning(f"[INSTANT_GREETING] Error converting PCM to mu-law: {e}")
 
-    # 2. Check RAM cache for static asset
+    # 2. Check dedicated 8kHz WAV file in plivo_8k
+    plivo_wav = os.path.join(PLIVO_STATIC_DIR, f"{asset_key}.wav")
+    if os.path.exists(plivo_wav):
+        try:
+            with wave.open(plivo_wav, "rb") as w:
+                w_rate = w.getframerate()
+                w_ch = w.getnchannels()
+                w_pcm = w.readframes(w.getnframes())
+            if w_rate != 8000:
+                w_pcm = audioop.ratecv(w_pcm, 2, w_ch, w_rate, 8000, None)[0]
+            ulaw_data = audioop.lin2ulaw(w_pcm, 2)
+            return ulaw_data, f"plivo_8k_wav_{asset_key}"
+        except Exception as e:
+            logger.debug(f"[INSTANT_GREETING] Error loading plivo_8k WAV {plivo_wav}: {e}")
+
+    # 3. Check RAM cache for static asset
     if asset_key in _ULAW_RAM_CACHE:
         return _ULAW_RAM_CACHE[asset_key], f"static_ram_{asset_key}"
 
-    # 3. Fallback to reading from disk if not yet in RAM
+    # 4. Fallback to reading from disk if not yet in RAM
     disk_path = os.path.join(STATIC_DIR, f"{asset_key}.ulaw")
     if os.path.exists(disk_path):
         try:
@@ -99,8 +118,22 @@ def get_greeting_ulaw_bytes(
         except Exception:
             pass
 
-    # 4. Fallback default
+    # 5. Fallback default
     fallback_key = "shreya_default"
+    fallback_wav = os.path.join(PLIVO_STATIC_DIR, f"{fallback_key}.wav")
+    if os.path.exists(fallback_wav):
+        try:
+            with wave.open(fallback_wav, "rb") as w:
+                w_rate = w.getframerate()
+                w_ch = w.getnchannels()
+                w_pcm = w.readframes(w.getnframes())
+            if w_rate != 8000:
+                w_pcm = audioop.ratecv(w_pcm, 2, w_ch, w_rate, 8000, None)[0]
+            ulaw_data = audioop.lin2ulaw(w_pcm, 2)
+            return ulaw_data, "fallback_plivo_8k_shreya"
+        except Exception:
+            pass
+
     if fallback_key in _ULAW_RAM_CACHE:
         return _ULAW_RAM_CACHE[fallback_key], "fallback_shreya"
 
