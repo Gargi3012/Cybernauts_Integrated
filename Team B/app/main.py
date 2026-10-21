@@ -284,9 +284,8 @@ async def handle_plivo_inbound_call(request: Request):
 
     # In Plivo, 'From' is caller, 'To' is dialed number, 'CallUUID' is call ID
     caller_phone = form_dict.get("From") or request.query_params.get("From", "")
-    to_phone = form_dict.get("To") or request.query_params.get("To", "")
+    to_phone = form_dict.get("To") or request.query_params.get("To", "") or form_dict.get("phone") or request.query_params.get("phone", "")
     call_id = form_dict.get("CallUUID") or request.query_params.get("CallUUID") or form_dict.get("call_uuid") or request.query_params.get("call_uuid", "")
-    phone_number = caller_phone if caller_phone else to_phone or "unknown_client"
 
     lead_id = form_dict.get("lead_id") or request.query_params.get("lead_id", "")
     domain = form_dict.get("domain") or request.query_params.get("domain", "")
@@ -296,7 +295,17 @@ async def handle_plivo_inbound_call(request: Request):
     persona = form_dict.get("persona") or request.query_params.get("persona", "")
     voice = form_dict.get("voice") or request.query_params.get("voice", "")
 
-    is_outbound = bool(lead_id or domain or session_id or dispatch_id or company_context_raw)
+    from app.config import PLIVO_PHONE_NUMBER
+    agent_num_clean = (PLIVO_PHONE_NUMBER or "").replace("+", "").strip()
+    caller_clean = caller_phone.replace("+", "").strip()
+
+    is_outbound = bool(lead_id or domain or session_id or dispatch_id or company_context_raw or (agent_num_clean and caller_clean == agent_num_clean))
+
+    # On outbound calls from agent, the contact is the dialed person ('To'). On inbound, it is the caller ('From').
+    if is_outbound:
+        phone_number = to_phone if to_phone else (caller_phone or "unknown_client")
+    else:
+        phone_number = caller_phone if caller_phone else (to_phone or "unknown_client")
 
     client_id_str = ""
     previous_summary = ""
@@ -416,12 +425,36 @@ async def handle_plivo_hangup(request: Request):
     """Callback triggered by Plivo when call completes."""
     logger.info("Plivo call hangup callback received.")
     lead_id = request.query_params.get("lead_id")
-    if not lead_id:
-        try:
-            form = await request.form()
+    session_id = request.query_params.get("session_id")
+    form = {}
+    try:
+        form = await request.form()
+        if not lead_id:
             lead_id = form.get("lead_id")
-        except Exception:
-            pass
+        if not session_id:
+            session_id = form.get("session_id")
+    except Exception:
+        pass
+
+    # Extract carrier duration if provided
+    carrier_duration = None
+    raw_duration = form.get("Duration") or request.query_params.get("Duration")
+    if raw_duration:
+        try:
+            carrier_duration = int(raw_duration)
+        except ValueError:
+            carrier_duration = None
+
+    if session_id:
+        try:
+            from app.db.connection import db_manager
+            from app.repositories.session_repository import SessionRepository
+            async with db_manager.get_session() as db:
+                await SessionRepository.close_session(db, session_id, duration=carrier_duration)
+                logger.info(f"Marked session {session_id} as CLOSED via Plivo hangup callback (duration={carrier_duration}s).")
+        except Exception as s_err:
+            logger.warning(f"Could not close DB session {session_id} on Plivo hangup: {s_err}")
+
     if lead_id:
         try:
             from database.repository import LeadRepository
@@ -910,16 +943,29 @@ async def run_voice_session(
     logger.info("Session created | session_id={sid} | client={client} | custom_prompt={has_p}", 
                 sid=session_id, client=masked_phone, has_p=bool(call_prompt_config is not None))
     
-    # Persist the Session in DB (Non-blocking background task)
-    if client_id_str:
-        async def _persist_session_bg(s_id: str, c_id_str: str):
-            try:
-                c_id = uuid.UUID(c_id_str)
-                async with db_manager.get_session() as db:
-                    await SessionRepository.create_session(db, s_id, c_id)
-            except Exception as e:
-                logger.error(f"Failed to persist Session in background: {e}")
-        asyncio.create_task(_persist_session_bg(session_id, client_id_str))
+    # Persist the Session in DB (Non-blocking background task for both Telephony and WebRTC)
+    async def _persist_session_bg(s_id: str, c_id_str: str, p_num: str):
+        try:
+            from app.repositories.client_repository import ClientRepository
+            async with db_manager.get_session() as db:
+                c_id = None
+                if c_id_str:
+                    try:
+                        c_id = uuid.UUID(c_id_str)
+                    except ValueError:
+                        c_id = None
+                if not c_id:
+                    client_rec = await ClientRepository.get_or_create_client(db, p_num or "unknown_client")
+                    c_id = client_rec.id
+                    sess_data = await session_manager.get_session(s_id)
+                    if sess_data:
+                        sess_data.metadata["client_id"] = str(c_id)
+
+                await SessionRepository.create_session(db, s_id, c_id)
+                logger.info("Persisted active session in DB | session_id={sid} | client_id={cid}", sid=s_id, cid=c_id)
+        except Exception as e:
+            logger.error(f"Failed to persist Session in background: {e}")
+    asyncio.create_task(_persist_session_bg(session_id, client_id_str, phone_number))
 
     # ── 2. Event Bus ────────────────────────────────────────────────────
     event_bus = EventBus()
@@ -1031,7 +1077,13 @@ async def run_voice_session(
                     generated_summary = prev_summary_text  # fallback: don't lose old summary on failure
 
                 await SessionRepository.save_summary(db_session, c_id, generated_summary)
-                await SessionRepository.close_session(db_session, event.session_id, int(sess_data.duration_seconds))
+                await SessionRepository.close_session(
+                    db_session,
+                    event.session_id,
+                    duration=int(sess_data.duration_seconds),
+                    client_id=c_id,
+                    started_at=sess_data.created_at,
+                )
                 logger.info("Persisted call summary and closed DB session for {sid}", sid=event.session_id)
 
             # ── Team A Integration Feedback Loop (Section 13) ─────────────────

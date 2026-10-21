@@ -59,6 +59,9 @@ def place_outbound_call(
 
     webhook_url = f"{public_base_url.rstrip('/')}/inbound-call"
     query_params = {}
+    if to_number:
+        query_params["phone"] = str(to_number)
+        query_params["to"] = str(to_number)
     if company_context:
         query_params["company_context"] = company_context
     if lead_id:
@@ -77,9 +80,14 @@ def place_outbound_call(
     if query_params:
         webhook_url += f"?{urllib.parse.urlencode(query_params)}"
 
-    hangup_url = f"{public_base_url.rstrip('/')}/plivo/hangup"
+    hangup_params = {}
     if lead_id:
-        hangup_url += f"?lead_id={urllib.parse.quote(str(lead_id))}"
+        hangup_params["lead_id"] = str(lead_id)
+    if session_id:
+        hangup_params["session_id"] = str(session_id)
+    hangup_url = f"{public_base_url.rstrip('/')}/plivo/hangup"
+    if hangup_params:
+        hangup_url += f"?{urllib.parse.urlencode(hangup_params)}"
 
     masked_to = f"{to_number[:3]}******{to_number[-4:]}" if len(to_number) > 7 else to_number
     logger.info(f"Placing Plivo outbound call: to={masked_to}, from={plivo_phone_number}, lead_id={lead_id}, dispatch_id={dispatch_id}, record_call={record_call}")

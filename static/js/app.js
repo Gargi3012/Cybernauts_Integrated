@@ -427,9 +427,15 @@ class CybernautsApp {
   }
 
   handleRoute() {
+    // Clean up previous active view if it defined a destroy method
+    if (this.currentActiveView && typeof this.currentActiveView.destroy === 'function') {
+      try { this.currentActiveView.destroy(); } catch (_) {}
+    }
+
     const hash = window.location.hash.replace('#', '') || 'overview';
     const targetView = this.views[hash] ? hash : 'overview';
     window.store.currentView = targetView;
+    this.currentActiveView = this.views[targetView];
 
     // Update Sidebar Active state
     document.querySelectorAll('.sidebar-link').forEach(link => {

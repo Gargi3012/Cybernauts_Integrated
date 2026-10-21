@@ -328,11 +328,12 @@ async def get_call_history():
                 summary = s.client.summary.summary if (s.client and s.client.summary) else "No summary recorded."
                 duration_str = f"{s.duration}s" if s.duration else "—"
                 t_mode = os.getenv("TRANSPORT_MODE", "plivo").lower()
+                clean_phone = phone.replace("+", "").replace("-", "").replace(" ", "").strip()
                 if "plivo" in s.session_id.lower():
                     t_label = "Plivo Telephony"
                 elif "twilio" in s.session_id.lower():
                     t_label = "Twilio Telephony"
-                elif phone.startswith("+"):
+                elif clean_phone.isdigit() and phone != "unknown_client":
                     t_label = "Plivo Telephony" if t_mode == "plivo" else "Twilio Telephony"
                 else:
                     t_label = "LiveKit WebRTC"

@@ -46,3 +46,33 @@ async def test_summary_persistence(db_session: AsyncSession):
     await SessionRepository.save_summary(db_session, client.id, "Updated summary")
     summary = await SessionRepository.get_summary(db_session, client.id)
     assert summary == "Updated summary"
+
+async def test_session_duplicate_creation_idempotent(db_session: AsyncSession):
+    client = await ClientRepository.get_or_create_client(db_session, "+9988776655")
+    sess_id = f"test_idemp_{uuid.uuid4().hex[:8]}"
+
+    # First creation
+    sess1 = await SessionRepository.create_session(db_session, sess_id, client.id)
+    assert sess1.session_id == sess_id
+    assert sess1.status == "ACTIVE"
+
+    # Second creation with identical session_id should return existing row without error
+    sess2 = await SessionRepository.create_session(db_session, sess_id, client.id)
+    assert sess2.id == sess1.id
+
+async def test_session_close_defensive_fallback(db_session: AsyncSession):
+    client = await ClientRepository.get_or_create_client(db_session, "+9988776655")
+    uncreated_sess_id = f"test_uncreated_{uuid.uuid4().hex[:8]}"
+
+    # Close directly with fallback client_id
+    closed = await SessionRepository.close_session(
+        db_session, 
+        uncreated_sess_id, 
+        duration=35, 
+        client_id=client.id
+    )
+    assert closed is not None
+    assert closed.session_id == uncreated_sess_id
+    assert closed.status == "CLOSED"
+    assert closed.duration == 35
+    assert closed.ended_at is not None
