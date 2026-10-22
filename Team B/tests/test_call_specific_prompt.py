@@ -590,18 +590,18 @@ async def test_turn_guard_compatibility():
     # First turn
     frame1 = LLMContextFrame(context=MagicMock())
     await guard_proc.process_frame(frame1, MagicMock())
-    assert shared_state["current_turn_id"] == 1
-    assert getattr(frame1, "_turn_id") == 1
+    assert shared_state["current_turn_id"] == 2
+    assert getattr(frame1, "_turn_id") == 2
 
     # User starts speaking again -> second turn
     frame2 = LLMContextFrame(context=MagicMock())
     await guard_proc.process_frame(frame2, MagicMock())
-    assert shared_state["current_turn_id"] == 2
-    assert getattr(frame2, "_turn_id") == 2
+    assert shared_state["current_turn_id"] == 3
+    assert getattr(frame2, "_turn_id") == 3
 
-    # Stale response from turn 1 arrives at TurnGuardFilter
+    # Stale response from turn 2 arrives at TurnGuardFilter (current is 3)
     resp_start_stale = LLMFullResponseStartFrame()
-    resp_start_stale._turn_id = 1
+    resp_start_stale._turn_id = 2
     await guard_filter.process_frame(resp_start_stale, MagicMock())
     assert guard_filter._suppressing is True
     assert shared_state.get("stale_responses_discarded", 0) == 1

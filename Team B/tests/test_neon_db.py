@@ -4,13 +4,18 @@ import sys
 from loguru import logger
 from sqlalchemy import text
 
-# Add the project root to sys.path so we can import from app
 import os
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.db.connection import db_manager
 from app.repositories.client_repository import ClientRepository
 
+@pytest.mark.skipif(
+    os.getenv("RUN_LIVE_NEON_TESTS") != "1",
+    reason="Live Neon PostgreSQL test requires RUN_LIVE_NEON_TESTS=1 and external network access",
+)
 async def test_connection():
     try:
         logger.info("Connecting to Neon PostgreSQL...")

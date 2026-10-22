@@ -68,14 +68,14 @@ async def save_lead(params, name: str, phone: str, project_details: str = ""):
     # --- Phone normalization & validation ---
     digits = _normalize_phone(phone)
 
-    if len(digits) != 10:
-        logger.warning(f"ACTIONABLE AI: 'save_lead' failed validation! Phone '{phone}' normalized to '{digits}' ({len(digits)} digits, expected 10).")
+    if len(digits) != 10 or digits[0] not in "6789":
+        logger.warning(f"ACTIONABLE AI: 'save_lead' failed validation! Phone '{phone}' normalized to '{digits}' (expected 10 digits starting with 6, 7, 8, or 9).")
         if getattr(params, "result_callback", None):
             await params.result_callback({
                 "status": "error",
                 "message": (
-                    f"Validation Failed: The phone number '{phone}' is invalid — it normalized to {len(digits)} digits "
-                    f"but Indian mobile numbers must be exactly 10 digits. "
+                    f"Validation Failed: The phone number '{phone}' is invalid — "
+                    f"valid Indian mobile numbers must be exactly 10 digits starting with 6, 7, 8, or 9. "
                     f"Tell the user: 'I'm sorry, that doesn't seem like a valid 10-digit Indian mobile number. "
                     f"Could you please say your number digit by digit?' Then try again after they confirm."
                 )
@@ -96,25 +96,22 @@ async def save_lead(params, name: str, phone: str, project_details: str = ""):
     
     try:
         async with _leads_lock:
-            leads = []
-            if os.path.exists(LEADS_FILE):
-                with open(LEADS_FILE, "r") as f:
-                    content = f.read().strip()
-                    if content:
-                        leads = json.loads(content)
-                        
-            # Prevent duplicate lead creation
-            recent_phones = [lead.get("phone") for lead in leads[-10:]]
-            if phone in recent_phones:
-                logger.info(f"save_lead: Lead with phone {phone} was already saved recently. Skipping duplicate insertion.")
-                if getattr(params, "result_callback", None):
-                    await params.result_callback({"status": "success", "message": "Lead already saved successfully. Do not call save_lead again for this user."})
-                return
+            success, is_duplicate, err_msg = await asyncio.to_thread(
+                _persist_lead_sync, lead_entry, phone, LEADS_FILE
+            )
             
-            leads.append(lead_entry)
-            
-            with open(LEADS_FILE, "w") as f:
-                json.dump(leads, f, indent=4)
+        if is_duplicate:
+            logger.info(f"save_lead: Lead with phone {phone} was already saved. Skipping duplicate insertion.")
+            if getattr(params, "result_callback", None):
+                await params.result_callback({
+                    "status": "success",
+                    "message": "Lead already saved successfully. Do not call save_lead again for this user.",
+                    "idempotent": True
+                })
+            return
+
+        if not success:
+            raise RuntimeError(err_msg or "Failed to persist lead")
             
         logger.info(f"Lead saved successfully to {LEADS_FILE}")
         
@@ -125,5 +122,87 @@ async def save_lead(params, name: str, phone: str, project_details: str = ""):
     except Exception as e:
         logger.error(f"Failed to save lead: {e}")
         if getattr(params, "result_callback", None):
-            await params.result_callback({"status": "error", "message": "Failed to save lead."})
+            await params.result_callback({"status": "error", "message": f"Failed to save lead: {e}"})
+
+
+def _cleanup_stale_temp_files(dir_path: str, max_age_seconds: float = 60.0):
+    """Cleans up abandoned .tmp files from previous crashed processes."""
+    import time
+    try:
+        now = time.time()
+        for fname in os.listdir(dir_path):
+            if fname.startswith("leads.json.tmp."):
+                full_path = os.path.join(dir_path, fname)
+                try:
+                    if os.path.isfile(full_path) and (now - os.path.getmtime(full_path) > max_age_seconds):
+                        os.unlink(full_path)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
+def _persist_lead_sync(lead_entry: dict, phone: str, leads_file: str = LEADS_FILE) -> tuple:
+    """Synchronous cross-process atomic persistence with durable file locking.
+    
+    Returns:
+        (success: bool, is_duplicate: bool, error_msg: str)
+    """
+    import fcntl
+    import uuid
+    import time
+
+    leads_dir = os.path.dirname(os.path.abspath(leads_file))
+    os.makedirs(leads_dir, exist_ok=True)
+    _cleanup_stale_temp_files(leads_dir, max_age_seconds=60.0)
+
+    lock_file_path = f"{leads_file}.lock"
+    temp_file = None
+
+    # Open with 'a' (append) mode to avoid truncating while another process holds an open fd
+    with open(lock_file_path, "a") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        try:
+            leads = []
+            if os.path.exists(leads_file):
+                try:
+                    with open(leads_file, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                        if content:
+                            leads = json.loads(content)
+                except Exception as read_err:
+                    corrupt_backup = f"{leads_file}.corrupt.{int(time.time())}"
+                    logger.error(f"[LEAD_PERSISTENCE] Corrupt {leads_file} ({read_err}); backing up to {corrupt_backup}")
+                    try:
+                        os.replace(leads_file, corrupt_backup)
+                    except OSError:
+                        pass
+                    leads = []
+
+            # Multi-process duplicate lead prevention (durable idempotency)
+            saved_phones = {lead.get("phone") for lead in leads if isinstance(lead, dict) and lead.get("phone")}
+            if phone in saved_phones:
+                return (True, True, "")
+
+            leads.append(lead_entry)
+
+            # Atomic write to temporary file followed by fsync and atomic rename
+            temp_file = f"{leads_file}.tmp.{os.getpid()}_{uuid.uuid4().hex}"
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(leads, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, leads_file)
+            temp_file = None
+            return (True, False, "")
+        except Exception as e:
+            return (False, False, str(e))
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except OSError:
+                    pass
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+
 

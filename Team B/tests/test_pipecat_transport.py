@@ -26,25 +26,8 @@ def test_mock_webrtc_transport():
 @patch("app.config.LIVEKIT_URL", None)
 def test_livekit_transport_missing_url():
     """Test ValueError when LIVEKIT_URL is missing."""
-    import sys
-    sys.modules['pipecat'] = MagicMock()
-    sys.modules['pipecat.transports'] = MagicMock()
-    sys.modules['pipecat.transports.livekit'] = MagicMock()
-    sys.modules['pipecat.transports.livekit.transport'] = MagicMock()
-
-    sys.modules['pipecat.audio'] = MagicMock()
-    sys.modules['pipecat.audio.vad'] = MagicMock()
-    sys.modules['pipecat.audio.vad.silero'] = MagicMock()
-    sys.modules['pipecat.audio.vad.vad_analyzer'] = MagicMock()
-    
     with pytest.raises(ValueError, match="LIVEKIT_URL is not set"):
         LiveKitTransportAdapter(room_url=None, bot_name="bot")
-
-    
-    # cleanup
-    for k in list(sys.modules.keys()):
-        if k.startswith('pipecat'):
-            del sys.modules[k]
 
 
 

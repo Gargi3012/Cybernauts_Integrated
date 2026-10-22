@@ -272,11 +272,14 @@ class LiveAgentView {
           </div>
 
           <!-- Traceability IDs Bar -->
-          <div style="display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 12px; background: rgba(107, 33, 168, 0.05); border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(107, 33, 168, 0.15);" class="font-mono text-muted">
+          <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 10px 12px; background: rgba(107, 33, 168, 0.05); border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(107, 33, 168, 0.15);" class="font-mono text-muted">
             <div><strong>Lead:</strong> ${activeCall.lead_id || '—'}</div>
             <div><strong>Dispatch:</strong> ${activeCall.dispatch_id || '—'}</div>
             <div><strong>Session:</strong> ${activeCall.session_id || '—'}</div>
             <div><strong>Call UUID:</strong> ${activeCall.call_uuid || '—'}</div>
+            <span class="badge ${activeCall.include_brand_introduction !== false ? 'badge-info' : 'badge-neutral'}" style="font-size: 11px; font-family: inherit;">
+              <i class="fa-solid fa-tag"></i> Brand Intro: ${activeCall.include_brand_introduction !== false ? 'Enabled' : 'Disabled'}
+            </span>
           </div>
 
           <!-- Active Custom Script Preview (if configured) -->
@@ -411,6 +414,27 @@ class LiveAgentView {
                 <i class="fa-solid fa-shield-halved" style="color: #6b21a8;"></i>
                 <strong>Call Scoped:</strong> Injected as Level 3 LLM instruction for this call only. Core safety, phone validation, and auto-hangup remain active.
               </span>
+            </div>
+
+            <!-- Brand Introduction Configuration (Phase 2) -->
+            <div style="margin-top: 12px; padding: 10px 12px; background: #ffffff; border-radius: 6px; border: 1px solid var(--border-color);">
+              <label for="chkIncludeBrandIntroLive" style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; user-select: none;">
+                <input 
+                  type="checkbox" 
+                  id="chkIncludeBrandIntroLive" 
+                  name="include_brand_introduction"
+                  checked
+                  style="margin-top: 3px; width: 16px; height: 16px; accent-color: #6b21a8; cursor: pointer; flex-shrink: 0;"
+                />
+                <div style="flex: 1;">
+                  <div style="font-size: 12.5px; font-weight: 700; color: var(--text-primary); line-height: 1.3;">
+                    Introduce the agent as being from Flowiz
+                  </div>
+                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4; margin-top: 2px;">
+                    When enabled, the agent may mention Flowiz in its opening introduction. When disabled, the agent will not volunteer the brand name.
+                  </div>
+                </div>
+              </label>
             </div>
           </div>
 
@@ -630,6 +654,28 @@ class LiveAgentView {
       });
     }
 
+    // Load saved brand introduction setting from localStorage (persisted preference, default true)
+    const chkBrandLive = container.querySelector('#chkIncludeBrandIntroLive');
+    if (chkBrandLive) {
+      try {
+        const savedBrandPref = localStorage.getItem('flowiz_include_brand_introduction');
+        if (savedBrandPref !== null) {
+          chkBrandLive.checked = savedBrandPref === 'true';
+        } else {
+          chkBrandLive.checked = true;
+        }
+      } catch (e) {
+        chkBrandLive.checked = true;
+      }
+      chkBrandLive.addEventListener('change', () => {
+        try {
+          localStorage.setItem('flowiz_include_brand_introduction', chkBrandLive.checked ? 'true' : 'false');
+        } catch (e) {
+          console.warn('Could not persist brand intro setting to localStorage:', e);
+        }
+      });
+    }
+
     // Manual dial with call script
     const btnDial = container.querySelector('#btnManualDial');
     if (btnDial && txtPhone) {
@@ -643,6 +689,7 @@ class LiveAgentView {
         const customerName = txtCustName ? txtCustName.value.trim() : '';
         const customerCtx = txtCustCtx ? txtCustCtx.value.trim() : '';
         const callPrompt = txtPrompt ? txtPrompt.value.trim() : '';
+        const includeBrandIntro = chkBrandLive ? chkBrandLive.checked : true;
 
         try {
           btnDial.disabled = true;
@@ -668,6 +715,7 @@ class LiveAgentView {
             call_prompt: callPrompt || undefined,
             has_call_prompt: Boolean(callPrompt),
             call_prompt_len: callPrompt ? callPrompt.length : 0,
+            include_brand_introduction: includeBrandIntro,
             call_status: 'initiating'
           });
 
@@ -689,7 +737,8 @@ class LiveAgentView {
             lead_id: leadId,
             session_id: sessionId,
             dispatch_id: dispatchId,
-            call_prompt: callPrompt || undefined
+            call_prompt: callPrompt || undefined,
+            include_brand_introduction: includeBrandIntro
           };
 
           const res = await window.api.triggerOutboundCall(phone, payload);

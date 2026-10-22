@@ -13,7 +13,8 @@ import re
 import aiohttp
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame, ErrorFrame, AggregationType
+from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame, ErrorFrame, AggregationType, InterruptionFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 from pipecat.utils.text.base_text_aggregator import BaseTextAggregator
 from pipecat.utils.text.simple_text_aggregator import Aggregation
@@ -131,6 +132,15 @@ class SarvamTTSService(TTSService):
         self._session: Optional[aiohttp.ClientSession] = None
         # Replace default sentence-lookahead aggregator with immediate low-latency clause aggregator
         self._text_aggregator = LowLatencyClauseAggregator()
+        self._active_clause_tasks: set[asyncio.Task] = set()
+
+    async def _handle_interruption(self, frame: InterruptionFrame, direction: FrameDirection):
+        for task in list(self._active_clause_tasks):
+            if not task.done():
+                task.cancel()
+        self._active_clause_tasks.clear()
+        if getattr(self, "_task_manager", None):
+            await super()._handle_interruption(frame, direction)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -152,6 +162,10 @@ class SarvamTTSService(TTSService):
         return self._session
 
     async def stop(self, *args, **kwargs):
+        for task in list(self._active_clause_tasks):
+            if not task.done():
+                task.cancel()
+        self._active_clause_tasks.clear()
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
@@ -173,6 +187,7 @@ class SarvamTTSService(TTSService):
         if not clauses:
             clauses = [text.strip()]
 
+        fetch_tasks = []
         try:
             yield TTSStartedFrame()
             
@@ -212,6 +227,8 @@ class SarvamTTSService(TTSService):
 
             # Launch async pre-fetch tasks for all clauses in parallel
             fetch_tasks = [asyncio.create_task(fetch_clause_audio(c)) for c in clauses]
+            for t in fetch_tasks:
+                self._active_clause_tasks.add(t)
 
             for task in fetch_tasks:
                 audio_bytes = await task
@@ -231,10 +248,21 @@ class SarvamTTSService(TTSService):
                 except Exception as wav_err:
                     logger.debug(f"Parsing WAV header failed (assuming raw PCM): {wav_err}")
 
+                if num_channels == 2:
+                    import audioop
+                    raw_pcm = audioop.tomono(raw_pcm, 2, 0.5, 0.5)
+                    num_channels = 1
+
+                # Enforce 16-bit PCM alignment (must be multiple of 2 bytes)
+                if len(raw_pcm) % 2 != 0:
+                    raw_pcm = raw_pcm[:-1]
+
                 # Stream audio in 4KB PCM chunks
                 chunk_size = 4096
                 for i in range(0, len(raw_pcm), chunk_size):
                     chunk = raw_pcm[i : i + chunk_size]
+                    if len(chunk) % 2 != 0:
+                        chunk = chunk[:-1]
                     yield TTSAudioRawFrame(
                         audio=chunk,
                         sample_rate=detected_rate,
@@ -243,6 +271,16 @@ class SarvamTTSService(TTSService):
 
             yield TTSStoppedFrame()
 
+        except asyncio.CancelledError:
+            for task in fetch_tasks:
+                if not task.done():
+                    task.cancel()
+            raise
         except Exception as e:
             logger.error(f"SarvamTTSService error: {e}")
             yield ErrorFrame(error=f"Sarvam TTS generation failed: {e}")
+        finally:
+            for task in fetch_tasks:
+                if not task.done():
+                    task.cancel()
+                self._active_clause_tasks.discard(task)

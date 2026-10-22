@@ -21,6 +21,7 @@ def place_outbound_call(
     lead_id: Optional[str] = None,
     session_id: Optional[str] = None,
     dispatch_id: Optional[str] = None,
+    include_brand_introduction: Optional[bool] = None,
 ) -> str:
     """
     Trigger an outbound call using Plivo's REST API.
@@ -31,6 +32,7 @@ def place_outbound_call(
         lead_id: Optional Team A lead record ID for post-call result correlation.
         session_id: Optional unique voice session ID.
         dispatch_id: Optional idempotency dispatch tracking ID.
+        include_brand_introduction: Optional boolean flag controlling brand intro.
         
     Returns:
         The Plivo request_uuid or call_uuid string.
@@ -61,6 +63,8 @@ def place_outbound_call(
         query_params["session_id"] = str(session_id)
     if dispatch_id:
         query_params["dispatch_id"] = str(dispatch_id)
+    if include_brand_introduction is not None:
+        query_params["include_brand_introduction"] = str(include_brand_introduction).lower()
 
     if query_params:
         webhook_url += f"?{urllib.parse.urlencode(query_params)}"

@@ -112,6 +112,7 @@ class CallTerminationProcessor(FrameProcessor):
         self.llm_response_completed = False
         self._hangup_executed = False
         self._watchdog_task = None
+        self._tts_drain_task = None
         self._current_bot_text = ""
 
     async def _execute_hangup(self, reason: str = "normal"):
@@ -137,6 +138,8 @@ class CallTerminationProcessor(FrameProcessor):
         # Cancel watchdog timer if running
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
+        if self._tts_drain_task and not self._tts_drain_task.done():
+            self._tts_drain_task.cancel()
 
         # 1. Terminate Plivo carrier phone call via REST API
         if call_id and auth_id and auth_token:
@@ -177,11 +180,16 @@ class CallTerminationProcessor(FrameProcessor):
         self.shared_state["termination_requested"] = False
         self.shared_state["ending_call"] = False
 
-    async def _start_watchdog(self, timeout_sec: float = 4.5):
+    async def _start_watchdog(self, timeout_sec: float = 10.0):
         try:
             await asyncio.sleep(timeout_sec)
+            # If bot is still speaking audio, extend watchdog window to allow goodbye to finish
+            extended = 0.0
+            while self.shared_state.get("tts_speaking") and extended < 6.0:
+                await asyncio.sleep(0.5)
+                extended += 0.5
             if not self._hangup_executed and (self.shared_state.get("hangup_requested") or self.shared_state.get("termination_requested")):
-                logger.warning(f"[EOC] Hangup watchdog timeout ({timeout_sec}s) reached. Triggering automatic call termination.")
+                logger.warning(f"[EOC] Hangup watchdog timeout ({timeout_sec + extended}s) reached. Triggering automatic call termination.")
                 await self._execute_hangup(reason="watchdog_timeout")
         except asyncio.CancelledError:
             pass
@@ -225,7 +233,7 @@ class CallTerminationProcessor(FrameProcessor):
         # When hangup is first requested, launch safety watchdog timer
         if (self.shared_state.get("hangup_requested") or self.shared_state.get("termination_requested")) and not self._hangup_executed:
             if not self._watchdog_task or self._watchdog_task.done():
-                self._watchdog_task = asyncio.create_task(self._start_watchdog(4.5))
+                self._watchdog_task = asyncio.create_task(self._start_watchdog(10.0))
 
         # Reset completed flag when a new user turn starts (unless already in ending_call)
         if isinstance(frame, TranscriptionFrame) and not getattr(frame, 'user_id', None) == "bot":
@@ -245,7 +253,7 @@ class CallTerminationProcessor(FrameProcessor):
                     self.shared_state["termination_requested"] = True
                     self.shared_state["termination_source"] = "NATURAL_CONCLUSION"
                     if not self._watchdog_task or self._watchdog_task.done():
-                        self._watchdog_task = asyncio.create_task(self._start_watchdog(4.5))
+                        self._watchdog_task = asyncio.create_task(self._start_watchdog(10.0))
 
         if self.shared_state.get("ending_call") or self.shared_state.get("termination_requested"):
             if isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame, TTSStartedFrame, TTSStoppedFrame, LLMFullResponseStartFrame)):
@@ -257,12 +265,40 @@ class CallTerminationProcessor(FrameProcessor):
                     ending_call_turn_id=self.shared_state.get("ending_call_turn_id"),
                 )
 
+        if isinstance(frame, AudioRawFrame):
+            if getattr(frame, "_generation_id", None) is None:
+                active_gen = self.shared_state.get("active_generation_id")
+                if active_gen is not None:
+                    frame._generation_id = active_gen
+
         if not isinstance(frame, (AudioRawFrame, TextFrame)):
             logger.debug(f"CallTerminationProcessor received: {type(frame).__name__} | hangup_requested={self.shared_state.get('hangup_requested', False)} | termination_requested={self.shared_state.get('termination_requested', False)}")
 
         await self.push_frame(frame, direction)
 
+        # Handle TTS completion during ending_call
+        if isinstance(frame, TTSStoppedFrame):
+            logger.info(
+                f"[EOC] CallTerminationProcessor saw TTSStoppedFrame | "
+                f"hangup_requested={self.shared_state.get('hangup_requested')} | "
+                f"termination_requested={self.shared_state.get('termination_requested')} | "
+                f"llm_completed={self.llm_response_completed}"
+            )
+            if (self.shared_state.get("hangup_requested") or self.shared_state.get("termination_requested")) and self.llm_response_completed and not getattr(frame, "is_filler", False):
+                async def _delayed_hangup_on_tts_stopped():
+                    try:
+                        await asyncio.sleep(1.2)
+                        if not self._hangup_executed:
+                            logger.info("[EOC] Graceful hangup triggered after TTSStoppedFrame handset buffer drain.")
+                            await self._execute_hangup(reason="tts_stopped_drained")
+                    except asyncio.CancelledError:
+                        pass
+                if not self._tts_drain_task or self._tts_drain_task.done():
+                    self._tts_drain_task = asyncio.create_task(_delayed_hangup_on_tts_stopped())
+
         if isinstance(frame, BotStoppedSpeakingFrame):
             logger.info(f"[EOC] CallTerminationProcessor saw BotStoppedSpeakingFrame. state: {self.shared_state}")
+            if self._tts_drain_task and not self._tts_drain_task.done():
+                self._tts_drain_task.cancel()
             if self.shared_state.get("hangup_requested") or self.shared_state.get("termination_requested"):
                 await self._execute_hangup(reason="bot_goodbye_completed")

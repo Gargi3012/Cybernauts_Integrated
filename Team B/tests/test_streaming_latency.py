@@ -12,7 +12,8 @@ Run with:
 import os
 import time
 import pytest
-from elevenlabs.client import ElevenLabs
+elevenlabs = pytest.importorskip("elevenlabs", reason="elevenlabs package not installed (Cartesia/Sarvam active)")
+ElevenLabs = elevenlabs.client.ElevenLabs
 from dotenv import load_dotenv
 
 load_dotenv()

@@ -494,11 +494,17 @@ class VoicePipelineClient {
         this.ui.setStatus('Dialing phone...', true, false);
         this.ui.updateMetrics(0, '-', '-');
 
+        const brandChk = document.getElementById('brand-intro-checkbox');
+        const includeBrand = brandChk ? brandChk.checked : true;
+
         try {
             const response = await fetch(`${this.prefix}/api/plivo/outbound`, {
                 method: 'POST',
                 headers: this.getAuthHeaders(),
-                body: JSON.stringify({ phoneNumber: phoneNumber })
+                body: JSON.stringify({
+                    phoneNumber: phoneNumber,
+                    include_brand_introduction: includeBrand
+                })
             });
 
             if (response.status === 401 || response.status === 403) {

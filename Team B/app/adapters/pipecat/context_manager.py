@@ -145,13 +145,18 @@ class CriticalCallMemory:
     custom_notes: List[str] = field(default_factory=list)
     phone_normalizer: Any = field(default=None)
     phone_confirmed: bool = False
+    readback_given: bool = False
     in_phone_capture: bool = False
+    qualification_machine: Any = field(default=None)
 
     def __post_init__(self):
         if self.phone_normalizer is None:
             self.phone_normalizer = PhoneDigitNormalizer(session_id=self.session_id)
         if self.phone_digits and not self.phone_normalizer.digits:
             self.phone_normalizer.process_utterance(self.phone_digits)
+        if self.qualification_machine is None:
+            from app.services.lead_qualification_machine import LeadQualificationStateMachine
+            self.qualification_machine = LeadQualificationStateMachine(session_id=self.session_id)
 
     def has_facts(self) -> bool:
         """Returns True if any meaningful call facts have been extracted."""
@@ -208,6 +213,11 @@ class CriticalCallMemory:
 
         lower_text = text.lower().strip()
 
+        if self.qualification_machine is None:
+            from app.services.lead_qualification_machine import LeadQualificationStateMachine
+            self.qualification_machine = LeadQualificationStateMachine(session_id=self.session_id)
+        self.qualification_machine.process_user_utterance(text, source=source)
+
         # 1. Phone number digits & multi-turn processing via PhoneDigitNormalizer
         # Phone capture is an EXPLICIT state.
         # Only process phone digits if:
@@ -230,27 +240,46 @@ class CriticalCallMemory:
             old_digits = self.phone_digits
             self.phone_normalizer.process_utterance(text)
             self.phone_digits = self.phone_normalizer.digits
+            digits_changed_this_turn = (old_digits != self.phone_digits)
             
             # If digits were extracted, ensure in_phone_capture is active
             if len(self.phone_digits) > 0 and not self.phone_confirmed:
                 self.in_phone_capture = True
 
-            # If digits changed, reset confirmation
-            if old_digits != self.phone_digits:
+            # If digits changed, reset confirmation and readback
+            if digits_changed_this_turn:
                 self.phone_confirmed = False
+                self.readback_given = False
 
-            # If we have 10 valid digits and user confirms or denies
+            # If we have 10 valid digits, evaluate confirmation only after readback has been delivered
             if len(self.phone_digits) == 10:
-                is_affirmative = bool(re.search(r'(?:हाँ|हां|सही|जी|बिल्कुल|ठीक|\b(?:yes|yeah|yep|correct|right|haan|han|ji|bilkul|exactly|sahi)\b)', lower_text))
-                is_negative = bool(re.search(r'(?:नहीं|ना|गलत|\b(?:no|wrong|incorrect|nahi|na|wait|galat)\b)', lower_text))
-                if is_affirmative:
-                    self.phone_confirmed = True
-                    self.in_phone_capture = False
-                    logger.info(f"[CRITICAL_MEMORY] Phone confirmed by user | session={self.session_id}")
-                elif is_negative:
+                if digits_changed_this_turn:
+                    # User just provided or modified digits in THIS utterance.
+                    # Cannot confirm on the same turn; assistant must deliver spoken readback first.
                     self.phone_confirmed = False
-                    self.in_phone_capture = True
-                    logger.info(f"[CRITICAL_MEMORY] Phone rejected by user | session={self.session_id}")
+                    self.readback_given = False
+                else:
+                    # Filter out common conversational suffixes like "right now", "all right" before checking affirmative
+                    filtered_lower = re.sub(r'\b(?:right\s+now|all\s+right|alright)\b', '', lower_text).strip()
+                    is_affirmative = bool(re.search(
+                        r'(?:हाँ|हां|सही|जी\s*हाँ|बिल्कुल|ठीक|\b(?:yes|yeah|yep|correct|haan|hanji|ji\s+haan|bilkul|exactly|sahi|sahi\s+hai|theek\s+hai|that\'s\s+right|thats\s+right|that\s+is\s+correct|that\'s\s+correct)\b|\bright\b)',
+                        filtered_lower
+                    ))
+                    is_negative = bool(re.search(
+                        r'(?:नहीं|ना|गलत|\b(?:no|wrong|incorrect|nahi|na|wait|galat|change|badlo|badal|different|stop|not\s+right)\b)',
+                        lower_text
+                    ))
+                    if is_negative:
+                        self.phone_confirmed = False
+                        self.readback_given = False
+                        self.in_phone_capture = True
+                        logger.info(f"[CRITICAL_MEMORY] Phone rejected/corrected by user | session={self.session_id}")
+                    elif is_affirmative and self.readback_given:
+                        self.phone_confirmed = True
+                        self.in_phone_capture = False
+                        logger.info(f"[CRITICAL_MEMORY] Phone confirmed by user after readback | session={self.session_id}")
+                    elif is_affirmative and not self.readback_given:
+                        logger.info(f"[CRITICAL_MEMORY] Caller confirmation deferred until assistant readback delivery | session={self.session_id}")
 
         # 2. Confirmed Name detection
         name_match = re.search(r"(?:my name is|i am|i'm|this is|mera naam|call me)\s+([^,.\n!]+)", text, re.IGNORECASE)
@@ -337,6 +366,19 @@ class CriticalCallMemory:
             if len(self.unresolved_questions) < 3:
                 self.unresolved_questions.append(text.strip())
 
+        # 9. Sync qualification machine state
+        if self.qualification_machine:
+            self.qualification_machine.update_phone_state(self.phone_digits, self.phone_confirmed, readback_given=self.readback_given)
+            if self.confirmed_name and not self.qualification_machine.confirmed_name:
+                self.qualification_machine.confirmed_name = self.confirmed_name
+            elif self.qualification_machine.confirmed_name and not self.confirmed_name:
+                self.confirmed_name = self.qualification_machine.confirmed_name
+            if self.crm and not self.qualification_machine.crm:
+                self.qualification_machine.crm = self.crm
+            if self.pain_points and not self.qualification_machine.pain_points:
+                self.qualification_machine.pain_points = self.pain_points
+            self.qualification_machine._evaluate_state()
+
     def extract_from_assistant_utterance(self, text: str) -> None:
         """Tracks tool executions or assistant confirmations."""
         if not text:
@@ -345,8 +387,26 @@ class CriticalCallMemory:
         if "save_lead" in lower_text or "saved your details" in lower_text or "details have been saved" in lower_text:
             self.lead_saved = True
             self.in_phone_capture = False
+            if self.qualification_machine:
+                from app.services.lead_qualification_machine import QualificationState
+                self.qualification_machine.save_status = "SUCCESS"
+                self.qualification_machine.state = QualificationState.SAVED
         if "end_call" in lower_text or "have a great day" in lower_text or "aapka din shubh ho" in lower_text:
             self.hangup_requested = True
+
+        # Explicit READBACK delivery detection:
+        # Detect when the assistant speaks the collected 10-digit phone number back to the caller for confirmation.
+        readback_patterns = [
+            r"\b(?:confirm|verify|read\s*back|check)\s+(?:your\s+)?(?:number|mobile|phone)\b",
+            r"\b(?:your\s+number\s+is|is\s+that\s+correct|kya\s+yeh\s+sahi\s+hai|number\s+sahi\s+hai)\b",
+            r"\b(?:just\s+to\s+confirm|let\s+me\s+confirm|apka\s+number)\b",
+            r"\b\d(?:\s+\d){6,}\b",  # spaced-out digit readback
+        ]
+        if any(re.search(pat, lower_text) for pat in readback_patterns) and len(self.phone_digits) == 10:
+            self.readback_given = True
+            if self.qualification_machine:
+                self.qualification_machine.readback_given = True
+            logger.info(f"[CRITICAL_MEMORY] Assistant delivered spoken readback -> readback_given=True | session={self.session_id}")
 
         # Explicit PHONE_CAPTURE state activation:
         # Detect when the assistant prompts the caller for their phone/mobile number.
@@ -361,6 +421,18 @@ class CriticalCallMemory:
             if not self.phone_confirmed and not self.lead_saved:
                 self.in_phone_capture = True
                 logger.info(f"[CRITICAL_MEMORY] Assistant prompted for phone -> in_phone_capture=True | session={self.session_id}")
+
+    def on_interruption(self) -> None:
+        """Called when an InterruptionFrame occurs in the audio pipeline.
+        
+        If the assistant's spoken readback was cancelled/interrupted before the caller confirmed,
+        invalidates readback_given so confirmation cannot be accepted prematurely.
+        """
+        if not self.phone_confirmed and self.readback_given:
+            logger.info(f"[CRITICAL_MEMORY] Spoken readback interrupted before confirmation -> readback_given=False | session={self.session_id}")
+            self.readback_given = False
+            if self.qualification_machine:
+                self.qualification_machine.readback_given = False
 
     def render_memory_block(self) -> str:
         """Renders the concise critical memory block to be injected into system context."""
@@ -380,8 +452,10 @@ class CriticalCallMemory:
         if self.phone_digits:
             if self.phone_confirmed or self.lead_saved:
                 status = "CONFIRMED by user - DO NOT ask to confirm again. Proceed with next steps."
+            elif self.readback_given:
+                status = "10 digits read back to caller - awaiting explicit caller confirmation"
             elif len(self.phone_digits) == 10:
-                status = "10 digits ready for confirmation"
+                status = "10 digits collected - MUST read back digit-by-digit before confirmation"
             else:
                 status = f"{len(self.phone_digits)} digits collected so far"
                 
@@ -448,6 +522,7 @@ class SlidingWindowLLMContext(LLMContext):
             self.shared_state["session_id"] = session_id
             self.shared_state["in_phone_capture"] = self.critical_memory.in_phone_capture
             self.shared_state["phone_confirmed"] = self.critical_memory.phone_confirmed
+            self.shared_state["qualification_machine"] = self.critical_memory.qualification_machine
 
         # Extract initial system prompt
         if self._messages and self._messages[0].get("role") == "system":
@@ -529,10 +604,16 @@ class SlidingWindowLLMContext(LLMContext):
 
         system_message = None
         non_system_messages: List[dict] = []
+        additional_system_instructions: List[str] = []
 
         for msg in messages:
             if msg.get("role") == "system":
-                system_message = msg
+                if system_message is None:
+                    system_message = msg
+                else:
+                    content = (msg.get("content", "") or "").strip()
+                    if content and content != (self._raw_system_prompt or "").strip():
+                        additional_system_instructions.append(content)
             else:
                 non_system_messages.append(msg)
 
@@ -540,11 +621,13 @@ class SlidingWindowLLMContext(LLMContext):
         base_system_content = self._raw_system_prompt or (system_message.get("content", "") if system_message else "")
         memory_block = self.critical_memory.render_memory_block()
         
-        if memory_block and memory_block not in base_system_content:
+        dynamic_system_content = base_system_content
+        if memory_block and memory_block not in dynamic_system_content:
             # Inject memory cleanly at the end of the system prompt
-            dynamic_system_content = base_system_content.rstrip() + "\n\n" + memory_block
-        else:
-            dynamic_system_content = base_system_content
+            dynamic_system_content = dynamic_system_content.rstrip() + "\n\n" + memory_block
+
+        if additional_system_instructions:
+            dynamic_system_content = dynamic_system_content.rstrip() + "\n\n[SYSTEM INSTRUCTIONS]:\n" + "\n".join(additional_system_instructions)
 
         # Apply sliding window to non-system messages
         if len(non_system_messages) > self.max_window_messages:

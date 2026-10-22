@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 import time
 from datetime import datetime
@@ -14,9 +15,10 @@ router = APIRouter()
 # Global manager to keep track of frontend connections
 frontend_websockets = []
 
+from app.services.auth_service import get_jwt_secret
+
 # --- Security Dependencies ---
 security = HTTPBearer()
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key")
 
 rate_limit_records = defaultdict(list)
 RATE_LIMIT_REQUESTS = 5
@@ -41,14 +43,18 @@ async def rate_limit(request: Request):
 async def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        logger.info(f"SECURITY: Successful authentication for user {payload.get('sub', 'unknown')} on /api/livekit/join")
+        secret = get_jwt_secret()
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        if not payload.get("sub"):
+            logger.warning("SECURITY: JWT token missing subject ('sub') claim")
+            raise HTTPException(status_code=403, detail="Invalid authentication token: missing subject claim")
+        logger.info(f"SECURITY: Successful authentication for user {payload.get('sub')} on route")
         return payload
     except jwt.ExpiredSignatureError:
         logger.warning("SECURITY: Expired JWT token attempt")
         raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError:
-        logger.warning("SECURITY: Invalid JWT token attempt")
+    except jwt.InvalidTokenError as err:
+        logger.warning(f"SECURITY: Invalid JWT token attempt: {type(err).__name__}")
         raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 from pydantic import BaseModel
@@ -161,39 +167,62 @@ async def trigger_outbound_call(payload: dict):
         raise HTTPException(status_code=400, detail="phoneNumber is required")
 
     company_context = payload.get("company_context") or payload.get("companyContext")
-    import json
-    import uuid
-    company_context_str = json.dumps(company_context) if isinstance(company_context, dict) else (company_context or None)
     lead_id = payload.get("lead_id")
     session_id = payload.get("session_id") or f"sess_{uuid.uuid4().hex[:12]}"
     dispatch_id = payload.get("dispatch_id") or f"disp_{uuid.uuid4().hex[:12]}"
     transport_mode = os.getenv("TRANSPORT_MODE", "plivo").lower()
 
-    # Call Prompt / Script Validation and Registration
+    # Call Prompt / Script & Brand Introduction Validation and Registration
     from app.services.call_config_registry import CallPromptConfig, call_config_registry
     prompt_config = None
-    raw_prompt = payload.get("call_prompt")
-    if raw_prompt is not None and str(raw_prompt).strip():
-        try:
-            prompt_config = CallPromptConfig(
-                call_prompt=str(raw_prompt),
-                objective=payload.get("objective"),
-                custom_qualification_criteria=payload.get("custom_qualification_criteria") or [],
-            )
-            call_config_registry.set(
-                session_id=session_id,
-                config=prompt_config,
-                dispatch_id=dispatch_id,
-            )
-        except ValueError as val_err:
-            raise HTTPException(status_code=422, detail=str(val_err))
-        except Exception as p_err:
-            raise HTTPException(status_code=422, detail=f"Invalid call_prompt: {p_err}")
+    raw_brand_intro = None
+    if isinstance(payload, dict):
+        if "include_brand_introduction" in payload:
+            raw_brand_intro = payload.get("include_brand_introduction")
+        elif "includeBrandIntroduction" in payload:
+            raw_brand_intro = payload.get("includeBrandIntroduction")
+
+    try:
+        resolved_brand_intro = CallPromptConfig.validate_brand_introduction(raw_brand_intro)
+    except ValueError as val_err:
+        raise HTTPException(status_code=422, detail=str(val_err))
+
+    if isinstance(company_context, dict):
+        company_context["include_brand_introduction"] = resolved_brand_intro
+    company_context_str = json.dumps(company_context) if isinstance(company_context, dict) else (company_context or None)
+
+    raw_prompt = payload.get("call_prompt") if isinstance(payload, dict) else None
+    has_custom_prompt = raw_prompt is not None
+
+    try:
+        prompt_config = CallPromptConfig(
+            call_prompt=raw_prompt,
+            objective=payload.get("objective") if isinstance(payload, dict) else None,
+            custom_qualification_criteria=(payload.get("custom_qualification_criteria") or []) if isinstance(payload, dict) else [],
+            include_brand_introduction=resolved_brand_intro,
+        )
+        call_config_registry.set(
+            session_id=session_id,
+            config=prompt_config,
+            dispatch_id=dispatch_id,
+        )
+    except ValueError as val_err:
+        raise HTTPException(status_code=422, detail=str(val_err))
+    except Exception as p_err:
+        raise HTTPException(status_code=422, detail=f"Invalid call_prompt: {p_err}")
 
     try:
         if transport_mode == "twilio":
             from Pillar_2.outbound_call import place_outbound_call
-            call_sid = await asyncio.to_thread(place_outbound_call, phone_number, company_context_str)
+            call_sid = await asyncio.to_thread(
+                place_outbound_call,
+                phone_number,
+                company_context_str,
+                lead_id=lead_id,
+                session_id=session_id,
+                dispatch_id=dispatch_id,
+                include_brand_introduction=resolved_brand_intro,
+            )
             return {
                 "status": "success",
                 "callSid": call_sid,
@@ -201,7 +230,8 @@ async def trigger_outbound_call(payload: dict):
                 "provider": "twilio",
                 "session_id": session_id,
                 "dispatch_id": dispatch_id,
-                "call_prompt_attached": bool(prompt_config is not None),
+                "call_prompt_attached": bool(prompt_config is not None and prompt_config.call_prompt is not None),
+                "include_brand_introduction": resolved_brand_intro,
             }
         else:
             try:
@@ -213,6 +243,7 @@ async def trigger_outbound_call(payload: dict):
                     lead_id=lead_id,
                     session_id=session_id,
                     dispatch_id=dispatch_id,
+                    include_brand_introduction=resolved_brand_intro,
                 )
             except Exception:
                 from Pillar_2.plivo_outbound import place_plivo_outbound_call
@@ -224,7 +255,8 @@ async def trigger_outbound_call(payload: dict):
                 "provider": "plivo",
                 "session_id": session_id,
                 "dispatch_id": dispatch_id,
-                "call_prompt_attached": bool(prompt_config is not None),
+                "call_prompt_attached": bool(prompt_config is not None and prompt_config.call_prompt is not None),
+                "include_brand_introduction": resolved_brand_intro,
             }
     except Exception as e:
         if prompt_config:
@@ -233,8 +265,8 @@ async def trigger_outbound_call(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/telephony/hangup")
-@router.post("/api/plivo/hangup-call")
+@router.post("/api/telephony/hangup", dependencies=[Depends(verify_jwt)])
+@router.post("/api/plivo/hangup-call", dependencies=[Depends(verify_jwt)])
 async def manual_telephony_hangup(payload: dict):
     """Explicitly hang up an active Plivo carrier phone call."""
     call_id = payload.get("call_id") or payload.get("callSid") or payload.get("call_uuid")
@@ -342,7 +374,7 @@ async def broadcast_frontend_event(event_name: str, data: dict = None):
     
     # Send to all connected frontends
     disconnected = []
-    for ws in frontend_websockets:
+    for ws in list(frontend_websockets):
         try:
             await ws.send_json(payload)
         except Exception:

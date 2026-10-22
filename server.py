@@ -44,7 +44,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize Team A SQLite database: {e}")
 
-    # Initialize Team B PostgreSQL Database Pool
+    # Initialize Team B PostgreSQL Database Pool & mark readiness
+    from app.main import APP_STATE as team_b_app_state
+    team_b_app_state["is_ready"] = True
     try:
         db_manager.init_db()
         async def prewarm():
@@ -59,6 +61,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down database connection pools...")
+    team_b_app_state["is_ready"] = False
     await db_manager.close()
 
 
@@ -102,18 +105,20 @@ if os.path.exists(static_dir):
 # Include Team A REST API endpoints (/api/search, /api/status, /api/leads, /api/categories)
 app.include_router(team_a_module.app.router)
 
-# Strip out conflicting root redirects and standalone frontend mounts from Team B before including
+# Include Team B REST & WebSocket endpoints (/inbound-call, /plivo/incoming, /ws, /api/login, /api/register, /api/livekit/join, /api/plivo/outbound, /ws/frontend)
+# Filter without mutating team_b_app.router.routes in-place to preserve test and process isolation
+from fastapi import APIRouter
 conflicting_paths = {
     "/", "/index.html", "/voice", "/voice/", "/voice/frontend",
     "/voice/frontend/", "/voice/frontend/index.html", "/frontend", "/frontend/index.html"
 }
-team_b_app.router.routes = [
-    r for r in team_b_app.router.routes
-    if getattr(r, "path", None) not in conflicting_paths and getattr(r, "name", None) not in ["frontend", "voice_frontend"]
-]
-
-# Include Team B REST & WebSocket endpoints (/inbound-call, /plivo/incoming, /ws, /api/login, /api/register, /api/livekit/join, /api/plivo/outbound, /ws/frontend)
-app.include_router(team_b_app.router)
+filtered_b_router = APIRouter(
+    routes=[
+        r for r in team_b_app.router.routes
+        if getattr(r, "path", None) not in conflicting_paths and getattr(r, "name", None) not in ["frontend", "voice_frontend"]
+    ]
+)
+app.include_router(filtered_b_router)
 
 if __name__ == "__main__":
     import uvicorn
