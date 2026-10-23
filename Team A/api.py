@@ -163,6 +163,7 @@ def _run_pipeline_bg(keyword: str):
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import config
         import utils.stats_tracker as stats
+        stats.reset()
 
         # ── Per-request deadline — isolated from any concurrent request ──────
         run_deadline = Deadline(100.0)
@@ -676,7 +677,25 @@ async def dispatch_lead_call(
         "session_id": session_id,
     })
 
-    # Package isolated and sanitized Company Context
+    # Call Prompt / Script & Brand Introduction Validation and Registration (Phases 2-4)
+    from app.services.call_config_registry import CallConfigRegistry, CallPromptConfig, call_config_registry
+    from loguru import logger
+
+    prompt_config = None
+    raw_brand_intro = None
+    if payload and isinstance(payload, dict):
+        if "include_brand_introduction" in payload:
+            raw_brand_intro = payload.get("include_brand_introduction")
+        elif "includeBrandIntroduction" in payload:
+            raw_brand_intro = payload.get("includeBrandIntroduction")
+
+    try:
+        resolved_brand_intro = CallPromptConfig.validate_brand_introduction(raw_brand_intro)
+    except ValueError as val_err:
+        logger.warning(f"[CALL_PROMPT_REJECTED] Invalid include_brand_introduction for lead {lead.domain}: {val_err}")
+        raise HTTPException(status_code=422, detail=str(val_err))
+
+    # Package isolated and sanitized Company Context (including explicit brand introduction setting)
     company_context = {
         "lead_id": str(lead.domain),
         "company_name": lead.company_name,
@@ -689,38 +708,38 @@ async def dispatch_lead_call(
         "contact_title": lead.people[0].designation if lead.people else "",
         "lead_score": lead.lead_score or 0,
         "lead_quality": lead.lead_quality or "",
+        "include_brand_introduction": resolved_brand_intro,
     }
     context_str = json.dumps(company_context)
 
-    # Call Prompt / Script Validation and Registration (Phase 3)
-    from app.services.call_config_registry import CallConfigRegistry, CallPromptConfig, call_config_registry
-    from loguru import logger
-
-    prompt_config = None
     raw_prompt = payload.get("call_prompt") if (payload and isinstance(payload, dict)) else None
-    if raw_prompt is not None and str(raw_prompt).strip():
-        try:
-            prompt_config = CallPromptConfig(
-                call_prompt=str(raw_prompt),
-                objective=payload.get("objective"),
-                custom_qualification_criteria=payload.get("custom_qualification_criteria") or [],
-            )
-            audit_meta = prompt_config.get_audit_meta()
-            logger.info(
-                f"[CALL_PROMPT_RECEIVED] Received call prompt | lead_id={lead.domain} | "
-                f"dispatch_id={dispatch_id} | length={audit_meta['length']} | sha256={audit_meta['sha256']}"
-            )
-            call_config_registry.set(
-                session_id=session_id,
-                config=prompt_config,
-                dispatch_id=dispatch_id,
-            )
-        except ValueError as val_err:
-            logger.warning(f"[CALL_PROMPT_REJECTED] Invalid call prompt for lead {lead.domain}: {val_err}")
-            raise HTTPException(status_code=422, detail=str(val_err))
-        except Exception as p_err:
-            logger.warning(f"[CALL_PROMPT_REJECTED] Call prompt rejected for lead {lead.domain}: {p_err}")
-            raise HTTPException(status_code=422, detail=f"Invalid call_prompt: {p_err}")
+    has_custom_prompt = raw_prompt is not None
+
+    try:
+        prompt_config = CallPromptConfig(
+            call_prompt=raw_prompt,
+            objective=payload.get("objective") if (payload and isinstance(payload, dict)) else None,
+            custom_qualification_criteria=(payload.get("custom_qualification_criteria") or []) if (payload and isinstance(payload, dict)) else [],
+            include_brand_introduction=resolved_brand_intro,
+        )
+        audit_meta = prompt_config.get_audit_meta()
+        logger.info(
+            f"[CALL_CONFIG_ATTACHED] Call configuration attached | lead_id={lead.domain} | "
+            f"dispatch_id={dispatch_id} | session_id={session_id} | "
+            f"include_brand_intro={resolved_brand_intro} | has_custom_prompt={bool(prompt_config.call_prompt)} | "
+            f"length={audit_meta['length']} | sha256={audit_meta['sha256']}"
+        )
+        call_config_registry.set(
+            session_id=session_id,
+            config=prompt_config,
+            dispatch_id=dispatch_id,
+        )
+    except ValueError as val_err:
+        logger.warning(f"[CALL_PROMPT_REJECTED] Invalid call prompt for lead {lead.domain}: {val_err}")
+        raise HTTPException(status_code=422, detail=str(val_err))
+    except Exception as p_err:
+        logger.warning(f"[CALL_PROMPT_REJECTED] Call prompt rejected for lead {lead.domain}: {p_err}")
+        raise HTTPException(status_code=422, detail=f"Invalid call_prompt: {p_err}")
 
     # Persona & Voice handling
     persona_val = payload.get("persona") if (payload and isinstance(payload, dict)) else None
@@ -736,8 +755,7 @@ async def dispatch_lead_call(
             lead_id=str(lead.domain),
             session_id=session_id,
             dispatch_id=dispatch_id,
-            persona=persona_val,
-            voice=voice_val,
+            include_brand_introduction=resolved_brand_intro,
         )
     except Exception as e:
         # Purge ephemeral call config from registry on dispatch failure
@@ -769,8 +787,9 @@ async def dispatch_lead_call(
         "provider": "plivo",
         "provider_call_id": call_id,
         "target_phone": clean_phone,
-        "call_prompt_attached": bool(prompt_config is not None),
-        "call_prompt_meta": prompt_config.get_audit_meta() if prompt_config else None,
+        "call_prompt_attached": bool(prompt_config is not None and prompt_config.call_prompt is not None),
+        "call_prompt_meta": prompt_config.get_audit_meta() if (prompt_config and prompt_config.call_prompt) else None,
+        "include_brand_introduction": resolved_brand_intro,
         "company_context": company_context,
     }
 

@@ -36,6 +36,10 @@
                     <button id="btn-join" class="btn btn-primary">Join Call</button>
                     <div id="phone-input-container" class="phone-call-container hidden">
                         <input type="tel" id="phone-input" placeholder="+91 XXXXX XXXXX" class="phone-input" />
+                        <div style="display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; color: var(--text-primary);">
+                            <input type="checkbox" id="brand-intro-checkbox" checked />
+                            <label for="brand-intro-checkbox" title="When enabled, the agent may mention Flowiz in its opening introduction. When disabled, the agent will not volunteer the brand name.">Introduce the agent as being from Flowiz</label>
+                        </div>
                         <button id="btn-call-phone" class="btn btn-phone">Join Call</button>
                     </div>
                     <button id="btn-leave" class="btn btn-secondary" disabled>Leave Call</button>

@@ -434,3 +434,152 @@ class TestLatencyRegressionAndPhoneFixes:
         await detector.process_frame(TranscriptionFrame(text="Thank you for confirming your number.", user_id="assistant", timestamp="2026-10-05T00:00:00Z"), None)
         assert shared_state.get("ending_call") is not True
         assert shared_state.get("hangup_requested") is not True
+
+    @pytest.mark.asyncio
+    async def test_12_assistant_prompt_sync_and_complete_phone_capture_150ms(self):
+        """
+        TEST 12 — ASSISTANT PROMPT SYNC AND COMPLETE PHONE CAPTURE (150ms)
+        Verifies the root cause fix from live call sess_1791567306863:
+        When the assistant asks for the mobile number in Hindi/English,
+        the context immediately updates in_phone_capture=True, and when
+        the caller answers with 'Yes. 7 0 8 2 9 6 8 7 0 2.', it uses the
+        150ms digit_complete_timeout instead of the 450ms normal timeout.
+        """
+        from app.adapters.pipecat.context_manager import SlidingWindowLLMContext
+        from app.adapters.pipecat.turn_guard import OptimizedUserTurnStopStrategy
+        from app.services.phone_digit_normalizer import PhoneDigitNormalizer
+
+        shared_state = {}
+        ctx = SlidingWindowLLMContext(
+            session_id="sess_live_repro",
+            max_window_messages=8,
+            shared_state=shared_state,
+        )
+
+        phone_norm = PhoneDigitNormalizer(session_id="sess_live_repro")
+        shared_state["phone_normalizer"] = phone_norm
+
+        strategy = OptimizedUserTurnStopStrategy(
+            user_speech_timeout=0.45,
+            digit_speech_timeout=2.2,
+            digit_complete_timeout=0.15,
+            shared_state=shared_state,
+        )
+
+        # 1. Assistant prompts for mobile number
+        assistant_prompt = "क्या आप अपना 10-digit mobile number digit by digit साझा करेंगे?"
+        ctx.add_message({
+            "role": "assistant",
+            "content": assistant_prompt,
+        })
+
+        assert shared_state.get("in_phone_capture") is True, "Assistant prompt should set in_phone_capture=True"
+
+        # 2. User responds with digits without saying the word 'phone'
+        user_utterance = "Yes. 7 0 8 2 9 6 8 7 0 2."
+        await strategy.process_frame(TranscriptionFrame(text=user_utterance, user_id="user", timestamp="2026-10-05T00:00:00Z"))
+
+        # 3. Verify phone normalizer accumulated the 10 digits
+        assert phone_norm.digits == "7082968702"
+
+        # 4. Verify timeout evaluates to exactly 0.15s (150ms complete phone timeout)
+        active_timeout = strategy._get_active_speech_timeout()
+        assert active_timeout == 0.15, f"Expected 0.15s for 10 valid digits, got {active_timeout}s"
+
+    @pytest.mark.asyncio
+    async def test_13_latency_waterfall_tracker_full_cycle(self):
+        """
+        TEST 13 — LATENCY WATERFALL TRACKER FULL CYCLE & REGRESSION DETECTION
+        Verifies Phase 2 and Phase 3 instrumentation:
+        - High-resolution monotonic timers
+        - Correlation identifiers
+        - Startup, turn, phone capture, interruption, and termination metrics
+        - Machine-readable JSON and CSV exports
+        - Regression detection logic
+        """
+        from app.metrics.latency import LatencyTracker
+
+        tracker = LatencyTracker()
+        tracker.set_correlation_context(
+            session_id="sess_test_waterfall",
+            call_uuid="call_uuid_test_waterfall",
+            dispatch_id="disp_test_waterfall",
+        )
+
+        # A. Startup waterfall
+        tracker.on_dispatch_initiated()
+        tracker.on_plivo_request(success=True)
+        tracker.on_carrier_dialing()
+        tracker.on_call_answered()
+        tracker.on_websocket_connected()
+        tracker.on_media_stream_usable()
+        tracker.on_pipeline_ready()
+        tracker.on_greeting_llm_start()
+        tracker.on_first_greeting_token()
+        tracker.on_first_tts_text()
+        tracker.on_first_tts_audio()
+        tracker.on_first_audio_played()
+
+        assert tracker.startup_metrics.answer_to_first_audio_ms is not None
+        assert tracker.startup_metrics.session_id == "sess_test_waterfall"
+
+        # B. Turn 1: Normal conversational turn
+        tracker.on_turn_started(turn_id=1)
+        tracker.on_vad_start()
+        tracker.on_vad_stop()
+        tracker.on_stt_transcript()
+        tracker.on_turn_finalized(timeout=0.45)
+        tracker.on_llm_request_started()
+        tracker.on_llm_first_token()
+        tracker.on_tts_text()
+        tracker.on_tts_start()
+        tracker.on_transport_audio()
+        tracker.on_llm_complete()
+
+        # C. Turn 2: Phone capture turn
+        tracker.on_turn_started(turn_id=2)
+        tracker.on_vad_start()
+        tracker.on_vad_stop()
+        tracker.on_stt_transcript()
+        tracker.on_phone_event(digit_count=10, provenance="user_speech", is_complete=True, is_confirmed=True)
+        tracker.on_turn_finalized(timeout=0.15)
+        tracker.on_llm_request_started()
+        tracker.on_llm_first_token()
+        tracker.on_tts_text()
+        tracker.on_tts_start()
+        tracker.on_transport_audio()
+        tracker.on_llm_complete()
+
+        # D. Interruption event
+        tracker.on_interruption_event(
+            turn_id=2,
+            accepted=True,
+            reason="barge_in_during_bot_speech",
+            cancellation_duration_ms=5.0,
+        )
+
+        # E. Termination waterfall
+        tracker.on_goodbye_detected()
+        tracker.on_bot_stopped_speaking()
+        tracker.on_hangup_requested()
+        tracker.on_carrier_hangup()
+
+        # F. Statistics and regression detection
+        stats = tracker.compute_statistics()
+        assert stats["turn_count"] == 2
+        assert stats["startup"]["answer_to_first_audio_ms"] is not None
+
+        reg_report = tracker.detect_regressions()
+        assert isinstance(reg_report["regressions"], list)
+        assert reg_report["has_regression"] is False
+
+        # G. Machine-readable export
+        json_data = tracker.export_json()
+        assert json_data["session_id"] == "sess_test_waterfall"
+        assert json_data["call_uuid"] == "call_uuid_test_waterfall"
+        assert len(json_data["turns"]) == 2
+
+        csv_text = tracker.export_csv()
+        assert "turn_number" in csv_text
+        assert "llm_ttft_s" in csv_text
+

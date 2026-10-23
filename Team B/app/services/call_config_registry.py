@@ -44,9 +44,8 @@ class CallPromptConfig(BaseModel):
     """
     model_config = ConfigDict(extra="ignore")
 
-    call_prompt: str = Field(
-        ...,
-        min_length=1,
+    call_prompt: Optional[str] = Field(
+        default=None,
         max_length=2500,
         description="Operator-provided call script or directive (max 2500 characters)."
     )
@@ -59,18 +58,44 @@ class CallPromptConfig(BaseModel):
         default_factory=list,
         description="Optional list of specific qualification criteria for this call."
     )
+    include_brand_introduction: bool = Field(
+        default=True,
+        description="Whether the AI agent may voluntarily introduce itself as being from Flowiz/Cybernauts."
+    )
 
     @field_validator("call_prompt", mode="before")
     @classmethod
-    def validate_and_normalize_prompt(cls, v: Any) -> str:
+    def validate_and_normalize_prompt(cls, v: Any) -> Optional[str]:
         if v is None:
-            raise ValueError("call_prompt cannot be None")
+            return None
         normalized = normalize_prompt_text(str(v))
         if not normalized:
             raise ValueError("call_prompt cannot be empty or whitespace-only")
         if len(normalized) > 2500:
             raise ValueError(f"call_prompt exceeds maximum length of 2500 characters (got {len(normalized)})")
         return normalized
+
+    @field_validator("include_brand_introduction", mode="before")
+    @classmethod
+    def validate_brand_introduction(cls, v: Any) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            if v in (0, 0.0):
+                return False
+            if v in (1, 1.0):
+                return True
+            raise ValueError("include_brand_introduction must be a valid boolean")
+        if isinstance(v, str):
+            clean = v.strip().lower()
+            if clean in ("true", "1", "yes", "on"):
+                return True
+            if clean in ("false", "0", "no", "off"):
+                return False
+            raise ValueError("include_brand_introduction must be a valid boolean ('true' or 'false')")
+        raise ValueError("include_brand_introduction must be a valid boolean")
 
     @field_validator("objective", mode="before")
     @classmethod
@@ -103,10 +128,11 @@ class CallPromptConfig(BaseModel):
     def get_audit_meta(self) -> Dict[str, Any]:
         """Returns safe audit metadata without logging sensitive prompt content."""
         return {
-            "length": len(self.call_prompt),
-            "sha256": compute_prompt_hash(self.call_prompt),
+            "length": len(self.call_prompt) if self.call_prompt else 0,
+            "sha256": compute_prompt_hash(self.call_prompt) if self.call_prompt else "empty",
             "has_objective": bool(self.objective),
             "criteria_count": len(self.custom_qualification_criteria),
+            "include_brand_introduction": self.include_brand_introduction,
         }
 
 

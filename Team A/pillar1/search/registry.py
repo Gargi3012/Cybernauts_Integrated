@@ -54,6 +54,7 @@ class LazyProviderRegistryDict(dict):
 PROVIDER_REGISTRY = LazyProviderRegistryDict()
 
 DEFAULT_PRIORITY: list[str] = [
+    "serpapi",
     "brave",
     "duckduckgo",
     "bing",

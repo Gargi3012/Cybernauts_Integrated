@@ -327,11 +327,215 @@ try:
                 except Exception as fallback_err:
                     logger.error(f"Fallback LLM also failed: {fallback_err}")
 
+
+    class ResilientTTSProcessor(FrameProcessor):
+        """Proxy processor that delegates to primary Cartesia TTS and falls back to Sarvam TTS on 429/error."""
+        def __init__(self, primary_tts, fallback_factory, shared_state=None):
+            super().__init__(enable_direct_mode=True)
+            self.primary_tts = primary_tts
+            self.fallback_factory = fallback_factory
+            self.shared_state = shared_state if shared_state is not None else {}
+            self.active_tts = primary_tts
+            self.fallback_active = False
+            self._start_frame = None
+            self._current_turn_frames = []
+            self._current_generation_id = None
+
+            # Hook primary TTS push_frame so outbound AudioRawFrames inherit active generation ID
+            self._hook_tts_push(primary_tts)
+
+            # Intercept errors pushed by primary TTS to trigger graceful fallback
+            orig_push_error = getattr(primary_tts, "push_error_frame", None)
+            async def intercept_error(error=None, *args, **kwargs):
+                error_obj = error or (args[0] if args else kwargs.get("error"))
+                err_text = str(getattr(error_obj, 'error', error_obj or ''))
+                if not self.fallback_active:
+                    logger.warning(f"Intercepted primary Cartesia TTS error: '{err_text}'. Triggering session-scoped fallback.")
+                    await self.trigger_tts_fallback(err_text)
+                    return
+                if orig_push_error and error_obj is not None:
+                    await orig_push_error(error_obj)
+            primary_tts.push_error_frame = intercept_error
+
+        def set_shared_state(self, shared_state: dict):
+            self.shared_state = shared_state
+
+        def _hook_tts_push(self, tts):
+            if not tts or getattr(tts, "_gen_hooked", False):
+                return
+            orig_push = getattr(tts, "push_frame", None)
+            if not orig_push:
+                return
+            async def hooked_push(frame, direction=FrameDirection.DOWNSTREAM, *args, **kwargs):
+                from pipecat.frames.frames import AudioRawFrame
+                if isinstance(frame, AudioRawFrame):
+                    if getattr(frame, "_generation_id", None) is None:
+                        active_gen = (
+                            getattr(self, "_current_generation_id", None)
+                            or (self.shared_state.get("active_generation_id") if hasattr(self, "shared_state") and self.shared_state else None)
+                        )
+                        if active_gen is not None:
+                            frame._generation_id = active_gen
+                await orig_push(frame, direction, *args, **kwargs)
+            tts.push_frame = hooked_push
+            tts._gen_hooked = True
+
+        def link(self, processor):
+            super().link(processor)
+            self.primary_tts.link(processor)
+            if self.fallback_active and self.active_tts and self.active_tts != self.primary_tts:
+                self.active_tts.link(processor)
+
+        async def setup(self, setup):
+            await super().setup(setup)
+            if hasattr(self.primary_tts, "setup"):
+                await self.primary_tts.setup(setup)
+
+        async def cleanup(self):
+            await super().cleanup()
+            if self.active_tts and self.active_tts != self.primary_tts:
+                try:
+                    await self.active_tts.cleanup()
+                except Exception as c_err:
+                    logger.debug(f"Notice cleaning up active fallback TTS: {c_err}")
+            if self.primary_tts:
+                try:
+                    await self.primary_tts.cleanup()
+                except Exception as p_err:
+                    logger.debug(f"Notice cleaning up primary TTS: {p_err}")
+
+        async def trigger_tts_fallback(self, error):
+            if self.fallback_active:
+                return
+
+            logger.error(f"Primary Cartesia TTS failed: {error}. Activating session-scoped Sarvam fallback!")
+            fallback_instance = None
+            try:
+                if callable(self.fallback_factory):
+                    fallback_instance = self.fallback_factory()
+            except Exception as fact_err:
+                logger.error(f"Fallback factory raised exception: {fact_err}")
+                await self.push_error(f"Fallback TTS factory failed: {fact_err}", exception=fact_err)
+                return
+
+            if fallback_instance is None:
+                logger.warning("No fallback TTS instance provided by fallback_factory.")
+                await self.push_error(f"No fallback TTS instance available: {error}")
+                return
+
+            try:
+                # Hook fallback instance push_frame for generation ID propagation
+                self._hook_tts_push(fallback_instance)
+
+                # Link fallback directly to downstream and upstream
+                if hasattr(fallback_instance, 'link') and hasattr(self, '_next') and self._next is not None:
+                    fallback_instance.link(self._next)
+                if hasattr(fallback_instance, '_prev'):
+                    fallback_instance._prev = self._prev
+
+                # Lifecycle setup
+                if hasattr(fallback_instance, 'setup'):
+                    from pipecat.processors.frame_processor import FrameProcessorSetup
+                    setup = FrameProcessorSetup(
+                        clock=self._clock,
+                        task_manager=self._task_manager,
+                        observer=getattr(self, '_observer', None),
+                    )
+                    await fallback_instance.setup(setup)
+
+                # Deliver StartFrame so fallback enters started state
+                if hasattr(self, '_start_frame') and self._start_frame is not None:
+                    await fallback_instance.process_frame(self._start_frame, FrameDirection.DOWNSTREAM)
+                elif hasattr(fallback_instance, '_FrameProcessor__started'):
+                    fallback_instance._FrameProcessor__started = True
+
+                # Replay current turn frames onto fallback TTS if turn has not been cancelled
+                if self._current_turn_frames:
+                    replay_frames = list(self._current_turn_frames)
+                    self._current_turn_frames.clear()
+                    logger.info(f"Replaying {len(replay_frames)} turn frames onto Sarvam fallback TTS (gen={self._current_generation_id})")
+                    for rf in replay_frames:
+                        if self._current_generation_id is not None and getattr(rf, "_generation_id", None) is None:
+                            rf._generation_id = self._current_generation_id
+                        await fallback_instance.process_frame(rf, FrameDirection.DOWNSTREAM)
+                else:
+                    self._current_turn_frames.clear()
+
+                # Disconnect primary TTS and unlink so late audio chunks cannot leak
+                try:
+                    if hasattr(self.primary_tts, "_next"):
+                        self.primary_tts._next = None
+                    if hasattr(self.primary_tts, "_disconnect"):
+                        await self.primary_tts._disconnect()
+                except Exception as disc_err:
+                    logger.debug(f"Notice disconnecting primary TTS: {disc_err}")
+
+                # Commit fallback transition only upon full success
+                self.active_tts = fallback_instance
+                self.fallback_active = True
+                logger.info("Session-scoped Sarvam fallback successfully activated.")
+            except Exception as fb_err:
+                logger.error(f"Failed to activate Sarvam fallback: {fb_err}")
+                self.fallback_active = False
+                self.active_tts = self.primary_tts
+                await self.push_error(f"Failed to activate fallback TTS: {fb_err}", exception=fb_err)
+
+        def __getattr__(self, name: str) -> Any:
+            if "active_tts" in self.__dict__ and self.active_tts is not None:
+                return getattr(self.active_tts, name)
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            if self.active_tts is not None and getattr(self.active_tts, "_prev", None) != self._prev:
+                self.active_tts._prev = self._prev
+
+            if isinstance(frame, StartFrame):
+                self._start_frame = frame
+
+            from pipecat.frames.frames import (
+                SystemFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TextFrame, InterruptionFrame, CancelFrame, TTSSpeakFrame
+            )
+            # Propagate system frame lifecycle to parent processor
+            if isinstance(frame, SystemFrame):
+                await super().process_frame(frame, direction)
+
+            if isinstance(frame, InterruptionFrame):
+                self._current_turn_frames.clear()
+                self._current_generation_id = None
+
+            active_fallback_gen = self.shared_state.get("active_generation_id") if hasattr(self, "shared_state") and self.shared_state else None
+
+            if isinstance(frame, (LLMFullResponseStartFrame, TTSSpeakFrame)):
+                gen = getattr(frame, "_generation_id", None) or active_fallback_gen
+                if gen is not None:
+                    self._current_generation_id = gen
+                self._current_turn_frames = [frame]
+            elif isinstance(frame, (TextFrame, LLMFullResponseEndFrame)):
+                if isinstance(frame, TextFrame):
+                    gen = getattr(frame, "_generation_id", None) or active_fallback_gen
+                    if gen is not None:
+                        self._current_generation_id = gen
+                if self._current_turn_frames:
+                    self._current_turn_frames.append(frame)
+
+            try:
+                if self.active_tts:
+                    await self.active_tts.process_frame(frame, direction)
+            except Exception as e:
+                logger.error(f"Error processing frame in active TTS: {e}")
+                await self.trigger_tts_fallback(e)
+                if self.fallback_active and self.active_tts:
+                    await self.active_tts.process_frame(frame, direction)
+                else:
+                    await self.push_error(f"Unrecoverable TTS error: {e}", exception=e)
+
+
 except ImportError:
     FrameProcessor = object
     StartFrame = object
     ResilientSTTProcessor = object
     ResilientLLMProcessor = object
+    ResilientTTSProcessor = object
 
 
 class MockPipecatProcessor:
@@ -379,6 +583,91 @@ def create_pipecat_processor(role: ProcessorRole, metadata: dict[str, Any], tran
             return _create_mock_processor(role)
         else:
             raise e
+
+
+_SHARED_OPENAI_HTTP_CLIENT = None
+
+def get_shared_openai_http_client():
+    """Returns a module-level persistent DefaultAsyncHttpxClient with keep-alive pooling."""
+    global _SHARED_OPENAI_HTTP_CLIENT
+    if _SHARED_OPENAI_HTTP_CLIENT is None:
+        import httpx
+        from openai import DefaultAsyncHttpxClient
+        _SHARED_OPENAI_HTTP_CLIENT = DefaultAsyncHttpxClient(
+            limits=httpx.Limits(
+                max_keepalive_connections=100,
+                max_connections=1000,
+                keepalive_expiry=None,
+            )
+        )
+    return _SHARED_OPENAI_HTTP_CLIENT
+
+from pipecat.services.openai.llm import OpenAILLMService
+
+class PooledOpenAILLMService(OpenAILLMService):
+    """OpenAILLMService that preserves HTTP keep-alive connection pools across calls.
+    Eliminates DNS, TCP, and TLS 1.3 connection penalties (~700-1100ms) on call startup."""
+    def create_client(
+        self,
+        api_key=None,
+        base_url=None,
+        organization=None,
+        project=None,
+        default_headers=None,
+        **kwargs,
+    ):
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            organization=organization,
+            project=project,
+            http_client=get_shared_openai_http_client(),
+            default_headers=default_headers,
+        )
+
+PooledOpenAILLMService.__name__ = "OpenAILLMService"
+
+
+_SHARED_GROQ_HTTP_CLIENT = None
+
+def get_shared_groq_http_client():
+    """Returns a module-level persistent DefaultAsyncHttpxClient with keep-alive pooling for Groq."""
+    global _SHARED_GROQ_HTTP_CLIENT
+    if _SHARED_GROQ_HTTP_CLIENT is None:
+        import httpx
+        from openai import DefaultAsyncHttpxClient
+        _SHARED_GROQ_HTTP_CLIENT = DefaultAsyncHttpxClient(
+            limits=httpx.Limits(
+                max_keepalive_connections=50,
+                max_connections=500,
+                keepalive_expiry=None,
+            )
+        )
+    return _SHARED_GROQ_HTTP_CLIENT
+
+from pipecat.services.groq.llm import GroqLLMService
+
+class PooledGroqLLMService(GroqLLMService):
+    """GroqLLMService that preserves HTTP keep-alive connection pools across calls.
+    Eliminates DNS, TCP, and TLS 1.3 connection setup penalties on call startup."""
+    def create_client(
+        self,
+        api_key=None,
+        base_url=None,
+        organization=None,
+        project=None,
+        default_headers=None,
+        **kwargs,
+    ):
+        from groq import AsyncGroq
+        return AsyncGroq(
+            api_key=api_key or self._api_key,
+            base_url=base_url or self._base_url,
+            http_client=get_shared_groq_http_client(),
+        )
+
+PooledGroqLLMService.__name__ = "GroqLLMService"
 
 
 def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transport_type: str = "livekit") -> Any:
@@ -474,12 +763,11 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
         
         def fallback_llm_factory():
             if LLM_PROVIDER.lower() == "openai":
-                from pipecat.services.groq.llm import GroqLLMService
                 from app.config import GROQ_API_KEY, GROQ_MODEL
                 if not GROQ_API_KEY:
                     raise ValueError("GROQ_API_KEY is not set for fallback LLM.")
-                logger.info("Created GroqLLMService as fallback.")
-                return GroqLLMService(
+                logger.info("Created PooledGroqLLMService as fallback.")
+                return PooledGroqLLMService(
                     api_key=GROQ_API_KEY,
                     settings=GroqLLMService.Settings(model=GROQ_MODEL),
                 )
@@ -519,24 +807,26 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
                 logger.info("OpenAIResponsesHttpLLMService created (resilient proxy) | model={m} | extra={e}", m=model, e=extra_params)
             else:
                 from pipecat.services.openai.llm import OpenAILLMService
-                llm = OpenAILLMService(
+                
+                # HTTP Connection Pooling optimization: Reuse keep-alive connection pool
+                # across calls to avoid DNS/TCP/TLS 1.3 handshakes on Call Startup Turn 1.
+                llm = PooledOpenAILLMService(
                     api_key=OPENAI_API_KEY,
                     settings=OpenAILLMService.Settings(model=model, extra=extra_params),
                 )
-                logger.info("OpenAILLMService created (resilient proxy) | model={m} | extra={e}", m=model, e=extra_params)
+                logger.info("OpenAILLMService (persistent keep-alive connection pool) created | model={m} | extra={e}", m=model, e=extra_params)
             return ResilientLLMProcessor(llm, fallback_llm_factory)
         else:
-            from pipecat.services.groq.llm import GroqLLMService
-    
             if not GROQ_API_KEY:
                 raise ValueError("GROQ_API_KEY is not set in your .env file.")
     
             model = metadata.get("model", GROQ_MODEL)
-            llm = GroqLLMService(
+            # HTTP Connection Pooling for Groq: Reuse persistent keep-alive pool across calls
+            llm = PooledGroqLLMService(
                 api_key=GROQ_API_KEY,
                 settings=GroqLLMService.Settings(model=model),
             )
-            logger.info("GroqLLMService created (resilient proxy) | model={m}", m=model)
+            logger.info("GroqLLMService (persistent keep-alive connection pool) created | model={m}", m=model)
             return ResilientLLMProcessor(llm, fallback_llm_factory)
 
     elif role == ProcessorRole.TTS:
@@ -630,115 +920,6 @@ def _create_real_processor(role: ProcessorRole, metadata: dict[str, Any], transp
                     model=s_model,
                     sample_rate=sample_rate,
                 )
-
-            class ResilientTTSProcessor(FrameProcessor):
-                """Proxy processor that delegates to primary Cartesia TTS and falls back to Sarvam TTS on 429/error."""
-                def __init__(self, primary_tts, fallback_factory):
-                    super().__init__()
-                    self.primary_tts = primary_tts
-                    self.fallback_factory = fallback_factory
-                    self.active_tts = primary_tts
-                    self.fallback_active = False
-                    self._start_frame = None
-                    self._current_turn_frames = []
-
-                    # Intercept 429 error frames pushed by primary TTS
-                    orig_push_error = primary_tts.push_error_frame
-                    async def intercept_error(error=None, *args, **kwargs):
-                        error_obj = error or (args[0] if args else kwargs.get("error"))
-                        err_text = str(getattr(error_obj, 'error', error_obj or ''))
-                        if '429' in err_text or 'concurrency limit' in err_text.lower() or 'rate limit' in err_text.lower():
-                            logger.warning(f"Intercepted Cartesia 429 error: {err_text}. Triggering session-scoped Sarvam fallback.")
-                            await self.trigger_tts_fallback(err_text)
-                            return
-                        if error_obj is not None:
-                            await orig_push_error(error_obj)
-                    primary_tts.push_error_frame = intercept_error
-
-                def link(self, processor):
-                    super().link(processor)
-                    self.primary_tts.link(processor)
-                    if self.fallback_active and self.active_tts:
-                        self.active_tts.link(processor)
-
-                async def setup(self, setup):
-                    await super().setup(setup)
-                    await self.primary_tts.setup(setup)
-
-                async def cleanup(self):
-                    await super().cleanup()
-                    await self.active_tts.cleanup()
-
-                async def trigger_tts_fallback(self, error):
-                    if not self.fallback_active:
-                        logger.error(f"Primary Cartesia TTS failed: {error}. Activating session-scoped Sarvam fallback!")
-                        self.fallback_active = True
-                        try:
-                            self.active_tts = self.fallback_factory()
-                            if hasattr(self.active_tts, 'link') and hasattr(self, '_next') and self._next is not None:
-                                self.active_tts.link(self._next)
-                            if hasattr(self.active_tts, '_prev'):
-                                self.active_tts._prev = self._prev
-
-                            if hasattr(self.active_tts, 'setup'):
-                                from pipecat.processors.frame_processor import FrameProcessorSetup
-                                setup = FrameProcessorSetup(
-                                    clock=self._clock,
-                                    task_manager=self._task_manager,
-                                    observer=getattr(self, '_observer', None),
-                                )
-                                await self.active_tts.setup(setup)
-                                self.active_tts._FrameProcessor__started = True
-
-                            if hasattr(self, '_start_frame') and self._start_frame is not None:
-                                await self.active_tts.process_frame(self._start_frame, FrameDirection.DOWNSTREAM)
-
-                            # Replay current turn frames onto fallback TTS so no speech is lost
-                            if self._current_turn_frames:
-                                replay_frames = list(self._current_turn_frames)
-                                self._current_turn_frames.clear()
-                                logger.info(f"Replaying {len(replay_frames)} turn frames onto Sarvam fallback TTS")
-                                for rf in replay_frames:
-                                    await self.active_tts.process_frame(rf, FrameDirection.DOWNSTREAM)
-
-                            try:
-                                await self.primary_tts._disconnect()
-                            except Exception:
-                                pass
-                            logger.info("Session-scoped Sarvam fallback successfully activated.")
-                        except Exception as fb_err:
-                            logger.error(f"Failed to activate Sarvam fallback: {fb_err}")
-
-                def __getattr__(self, name: str) -> Any:
-                    if "active_tts" in self.__dict__:
-                        return getattr(self.active_tts, name)
-                    raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-
-                async def process_frame(self, frame: Frame, direction: FrameDirection):
-                    if self.active_tts._prev != self._prev:
-                        self.active_tts._prev = self._prev
-
-                    if isinstance(frame, StartFrame):
-                        self._start_frame = frame
-
-                    from pipecat.frames.frames import (
-                        SystemFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TextFrame
-                    )
-                    if isinstance(frame, LLMFullResponseStartFrame):
-                        self._current_turn_frames = [frame]
-                    elif isinstance(frame, (TextFrame, LLMFullResponseEndFrame)):
-                        if self._current_turn_frames:
-                            self._current_turn_frames.append(frame)
-
-                    if isinstance(frame, SystemFrame):
-                        await super().process_frame(frame, direction)
-
-                    try:
-                        await self.active_tts.process_frame(frame, direction)
-                    except Exception as e:
-                        await self.trigger_tts_fallback(e)
-                        if self.fallback_active:
-                            await self.active_tts.process_frame(frame, direction)
 
             return ResilientTTSProcessor(tts, fallback_sarvam_factory)
 

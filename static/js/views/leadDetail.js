@@ -297,6 +297,27 @@ class LeadDetailView {
             </div>
           </div>
 
+          <!-- Brand Introduction Configuration (Phase 2) -->
+          <div style="margin-bottom: 16px; padding: 12px 14px; background: var(--bg-surface-secondary); border-radius: 8px; border: 1px solid var(--border-color);">
+            <label for="chkIncludeBrandIntro" style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; user-select: none;">
+              <input 
+                type="checkbox" 
+                id="chkIncludeBrandIntro" 
+                name="include_brand_introduction"
+                checked
+                style="margin-top: 3px; width: 17px; height: 17px; accent-color: #6b21a8; cursor: pointer; flex-shrink: 0;"
+              />
+              <div style="flex: 1;">
+                <div style="font-size: 13px; font-weight: 700; color: var(--text-primary); line-height: 1.3;">
+                  Introduce the agent as being from Flowiz
+                </div>
+                <div style="font-size: 11.5px; color: var(--text-muted); line-height: 1.4; margin-top: 3px;">
+                  When enabled, the agent may mention Flowiz in its opening introduction. When disabled, the agent will not volunteer the brand name.
+                </div>
+              </div>
+            </label>
+          </div>
+
           <div style="display: flex; justify-content: flex-end; gap: 10px;">
             <button class="btn btn-secondary" id="btnCancelConfirm">Cancel</button>
             <button class="btn btn-primary" id="btnExecuteDispatch" style="background: #6b21a8; border-color: #581c87;">
@@ -323,6 +344,28 @@ class LeadDetailView {
     const charCountEl = confirmContainer.querySelector('#callPromptCharCount');
     const templateSelect = confirmContainer.querySelector('#callPromptTemplate');
     const btnClearPrompt = confirmContainer.querySelector('#btnClearPrompt');
+    const chkBrandIntro = confirmContainer.querySelector('#chkIncludeBrandIntro');
+
+    // Load saved brand introduction setting from localStorage (persisted preference, default true)
+    if (chkBrandIntro) {
+      try {
+        const savedBrandPref = localStorage.getItem('flowiz_include_brand_introduction');
+        if (savedBrandPref !== null) {
+          chkBrandIntro.checked = savedBrandPref === 'true';
+        } else {
+          chkBrandIntro.checked = true;
+        }
+      } catch (e) {
+        chkBrandIntro.checked = true;
+      }
+      chkBrandIntro.addEventListener('change', () => {
+        try {
+          localStorage.setItem('flowiz_include_brand_introduction', chkBrandIntro.checked ? 'true' : 'false');
+        } catch (e) {
+          console.warn('Could not persist brand intro setting to localStorage:', e);
+        }
+      });
+    }
 
     if (promptTextarea && charCountEl) {
       promptTextarea.addEventListener('input', () => {
@@ -373,8 +416,12 @@ class LeadDetailView {
       btnExecute.addEventListener('click', async () => {
         document.removeEventListener('keydown', handleEscape);
         const customPrompt = promptTextarea ? promptTextarea.value.trim() : '';
+        const includeBrandIntro = chkBrandIntro ? chkBrandIntro.checked : true;
         confirmContainer.innerHTML = '';
-        await this.executeDispatch(modalContainer, lead, phone, customPrompt ? { call_prompt: customPrompt } : {});
+        await this.executeDispatch(modalContainer, lead, phone, {
+          ...(customPrompt ? { call_prompt: customPrompt } : {}),
+          include_brand_introduction: includeBrandIntro,
+        });
       });
     }
   }
@@ -427,6 +474,7 @@ class LeadDetailView {
           started_at: new Date().toISOString(),
           has_custom_prompt: Boolean(promptData.call_prompt),
           prompt_len: (promptData.call_prompt || '').length,
+          include_brand_introduction: promptData.include_brand_introduction !== false,
         });
 
         // Update Lead status locally

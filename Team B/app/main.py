@@ -25,7 +25,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 from loguru import logger
 logger.add("server_logs.txt", rotation="10 MB")
 from fastapi import FastAPI, WebSocket, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.websockets import WebSocketDisconnect
 
 from app.config import DAILY_ROOM_URL, LIVEKIT_URL, BOT_NAME, TRANSPORT_MODE
@@ -50,7 +50,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 load_dotenv()
 
-APP_STATE = {"is_ready": False}
+APP_STATE = {"is_ready": True}
 
 
 @asynccontextmanager
@@ -97,9 +97,25 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # Validate production/staging security configuration before declaring readiness
+    env = os.getenv("ENVIRONMENT", "development").strip().lower()
+    if env in ("production", "staging", "prod"):
+        try:
+            from app.services.auth_service import validate_jwt_secret
+            validate_jwt_secret()
+            if os.getenv("TRANSPORT_MODE", "plivo") == "plivo":
+                p_token = os.getenv("PLIVO_AUTH_TOKEN", "")
+                if not p_token or p_token.startswith("dummy_") or p_token in ("your-token", "change-me", "secret"):
+                    raise ValueError("PLIVO_AUTH_TOKEN must be configured with a valid token in production/staging")
+            logger.info(f"SECURITY: Verified security configuration for {env} environment.")
+        except Exception as config_err:
+            logger.critical(f"FATAL: Security configuration validation failed: {config_err}")
+            APP_STATE["is_ready"] = False
+            raise RuntimeError(f"Startup blocked due to invalid security configuration: {config_err}")
+
     # Mark as ready immediately so FastAPI serves requests instantly
     APP_STATE["is_ready"] = True
-    logger.info("FastAPI backend marked READY instantly.")
+    logger.info("FastAPI backend marked READY.")
     
     async def stale_session_cleanup_task():
         import asyncio
@@ -130,19 +146,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, root_path=os.getenv("ROOT_PATH", ""))
 
-from fastapi.responses import FileResponse, RedirectResponse
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+STATIC_INDEX = os.path.join(PROJECT_ROOT, "static", "index.html")
+FRONTEND_INDEX = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html"))
 
 @app.get("/")
+def serve_root():
+    if os.path.exists(STATIC_INDEX):
+        return FileResponse(STATIC_INDEX)
+    elif os.path.exists(FRONTEND_INDEX):
+        return FileResponse(FRONTEND_INDEX)
+    return {"message": "Flowiz Voice Backend Ready"}
+
 @app.get("/voice/frontend/index.html")
 @app.get("/voice/frontend/")
 @app.get("/voice/frontend")
 @app.get("/voice")
 @app.get("/voice/")
-@app.get("/frontend")
-@app.get("/frontend/")
 @app.get("/frontend/index.html")
 def root_redirect():
     return RedirectResponse(url="/", status_code=302)
+
+from fastapi.staticfiles import StaticFiles
+
+static_dir = os.path.join(PROJECT_ROOT, "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
+if os.path.exists(frontend_dir):
+    app.mount("/frontend", StaticFiles(directory=frontend_dir), name="frontend")
+    app.mount("/voice/frontend", StaticFiles(directory=frontend_dir), name="voice_frontend")
 
 @app.get("/health")
 def health_check():
@@ -182,45 +216,86 @@ def xml_escape(value: str) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
+_SEEN_PLIVO_NONCES: dict = {}
+_SEEN_NONCES_LOCK: asyncio.Lock = asyncio.Lock()
+
 def validate_plivo_request(request: Request, form_dict: dict) -> bool:
-    """Validate incoming Plivo webhook signature using Plivo V3 or V2 auth scheme."""
+    """
+    Validate incoming Plivo webhook signature using Plivo V3 or V2 auth scheme.
+    Enforces replay protection, trusted base URL reconstruction, and strict fail-closed
+    behavior in production and staging environments.
+    """
     from app.config import PLIVO_AUTH_TOKEN, SERVER_BASE_URL, PUBLIC_BASE_URL
     import os
+    import time
+
+    env = os.getenv("ENVIRONMENT", "development").strip().lower()
+    is_prod_or_staging = env in ("production", "staging", "prod")
 
     signature_v3 = request.headers.get("X-Plivo-Signature-V3", "")
     nonce_v3 = request.headers.get("X-Plivo-Signature-V3-Nonce", "")
     signature_v2 = request.headers.get("X-Plivo-Signature-V2") or request.headers.get("X-Plivo-Signature", "")
     nonce_v2 = request.headers.get("X-Plivo-Signature-V2-Nonce", "")
 
-    auth_token = PLIVO_AUTH_TOKEN or os.getenv("PLIVO_AUTH_TOKEN", "")
+    auth_token = (os.getenv("PLIVO_AUTH_TOKEN") or PLIVO_AUTH_TOKEN or "").strip()
 
-    # If no signature or token, evaluate environment bypass
-    if not auth_token or auth_token.startswith("dummy_"):
-        return True
-    if not signature_v3 and not signature_v2:
-        if os.getenv("ENVIRONMENT", "development").lower() == "development":
-            return True
-        return False
-
-    host = request.headers.get("host", "")
-    proto = request.headers.get("x-forwarded-proto", "https" if "ngrok" in host else "http")
-    public_url = ""
-    if host and ("ngrok" in host or ("." in host and not host.startswith("localhost") and not host.startswith("127.0.0.1"))):
-        public_url = f"{proto}://{host}"
+    # Fail closed in production/staging if auth token is missing or placeholder
+    if is_prod_or_staging:
+        if not auth_token or auth_token.startswith("dummy_") or auth_token in ("your-token", "change-me", "secret"):
+            logger.error("SECURITY: Plivo auth token is missing or dummy in production/staging environment")
+            return False
+        if not signature_v3 and not signature_v2:
+            logger.warning("SECURITY: Rejecting webhook: Missing Plivo signature header in production/staging")
+            return False
     else:
-        public_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL") or SERVER_BASE_URL or PUBLIC_BASE_URL or "").rstrip("/")
+        # Development / test mode bypass
+        if not auth_token or auth_token.startswith("dummy_"):
+            return True
+        if not signature_v3 and not signature_v2:
+            return True
 
-    if public_url:
-        validator_url = f"{public_url}{request.url.path}"
+    # Replay protection on nonce
+    active_nonce = nonce_v3 or nonce_v2
+    now = time.time()
+    if active_nonce:
+        # Clean expired nonces older than 10 minutes
+        expired = [n for n, ts in _SEEN_PLIVO_NONCES.items() if now - ts > 600]
+        for n in expired:
+            _SEEN_PLIVO_NONCES.pop(n, None)
+
+        if active_nonce in _SEEN_PLIVO_NONCES:
+            logger.warning(f"SECURITY: Replay detected for Plivo webhook nonce '{active_nonce}'")
+            return False
+        # Optimistically record to prevent concurrent race condition
+        _SEEN_PLIVO_NONCES[active_nonce] = now
+
+    # Derive trusted callback URL for signature verification
+    trusted_base = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL") or SERVER_BASE_URL or PUBLIC_BASE_URL or "").rstrip("/")
+    if trusted_base:
+        validator_url = f"{trusted_base}{request.url.path}"
         if request.url.query:
             validator_url += f"?{request.url.query}"
     else:
-        validator_url = str(request.url)
+        if is_prod_or_staging:
+            if active_nonce:
+                _SEEN_PLIVO_NONCES.pop(active_nonce, None)
+            logger.error("SECURITY: PUBLIC_BASE_URL or SERVER_BASE_URL required for webhook verification in production/staging")
+            return False
+        host = request.headers.get("host", "")
+        proto = request.headers.get("x-forwarded-proto", "https" if "ngrok" in host else "http")
+        if host and ("ngrok" in host or ("." in host and not host.startswith("localhost") and not host.startswith("127.0.0.1"))):
+            public_url = f"{proto}://{host}"
+            validator_url = f"{public_url}{request.url.path}"
+            if request.url.query:
+                validator_url += f"?{request.url.query}"
+        else:
+            validator_url = str(request.url)
 
+    is_valid = False
     try:
         import plivo.utils
         if signature_v3:
-            return plivo.utils.validate_v3_signature(
+            is_valid = plivo.utils.validate_v3_signature(
                 method=request.method,
                 uri=validator_url,
                 nonce=nonce_v3,
@@ -229,14 +304,20 @@ def validate_plivo_request(request: Request, form_dict: dict) -> bool:
                 params=form_dict,
             )
         elif signature_v2:
-            return plivo.utils.validate_signature(
+            is_valid = plivo.utils.validate_signature(
                 uri=validator_url,
                 nonce=nonce_v2,
                 signature=signature_v2,
                 auth_token=auth_token,
             )
-        return False
+
+        if not is_valid and active_nonce:
+            _SEEN_PLIVO_NONCES.pop(active_nonce, None)
+
+        return bool(is_valid)
     except Exception as e:
+        if active_nonce:
+            _SEEN_PLIVO_NONCES.pop(active_nonce, None)
         logger.warning(f"Error executing Plivo signature validation: {e}")
         return False
 
@@ -257,8 +338,12 @@ async def handle_plivo_inbound_call(request: Request):
 
     # ── Backend Readiness ──
     if not APP_STATE.get("is_ready"):
-        logger.warning("Incoming Plivo call rejected: Backend not ready.")
-        raise HTTPException(status_code=503, detail="Service not ready")
+        if os.getenv("ENVIRONMENT", "development").lower() not in ("production", "staging"):
+            logger.info("Auto-enabling backend readiness in development mode.")
+            APP_STATE["is_ready"] = True
+        else:
+            logger.warning("Incoming Plivo call rejected: Backend not ready.")
+            raise HTTPException(status_code=503, detail="Service not ready")
 
     if request.method == "POST":
         try:
@@ -292,8 +377,7 @@ async def handle_plivo_inbound_call(request: Request):
     session_id = form_dict.get("session_id") or request.query_params.get("session_id", "")
     dispatch_id = form_dict.get("dispatch_id") or request.query_params.get("dispatch_id", "")
     company_context_raw = form_dict.get("company_context") or request.query_params.get("company_context", "")
-    persona = form_dict.get("persona") or request.query_params.get("persona", "")
-    voice = form_dict.get("voice") or request.query_params.get("voice", "")
+    brand_intro_param = form_dict.get("include_brand_introduction") or request.query_params.get("include_brand_introduction", "")
 
     from app.config import PLIVO_PHONE_NUMBER
     agent_num_clean = (PLIVO_PHONE_NUMBER or "").replace("+", "").strip()
@@ -387,20 +471,16 @@ async def handle_plivo_inbound_call(request: Request):
             query_params.append(f"dispatch_id={urllib.parse.quote(dispatch_id)}")
         if company_context_raw:
             query_params.append(f"company_context={urllib.parse.quote(company_context_raw)}")
-        if persona:
-            query_params.append(f"persona={urllib.parse.quote(persona)}")
-        if voice:
-            query_params.append(f"voice={urllib.parse.quote(voice)}")
+        if brand_intro_param:
+            query_params.append(f"include_brand_introduction={urllib.parse.quote(str(brand_intro_param))}")
         stream_url = f"{stream_base}/ws?{'&amp;'.join(query_params)}"
     else:
         # Standard telephony stream routing to /ws/plivo
         plivo_params = [f"phone={phone_encoded}", f"client_id={client_id_encoded}", f"call_id={call_id_encoded}"]
         if company_context_raw:
             plivo_params.append(f"company_context={urllib.parse.quote(company_context_raw)}")
-        if persona:
-            plivo_params.append(f"persona={urllib.parse.quote(persona)}")
-        if voice:
-            plivo_params.append(f"voice={urllib.parse.quote(voice)}")
+        if brand_intro_param:
+            plivo_params.append(f"include_brand_introduction={urllib.parse.quote(str(brand_intro_param))}")
         stream_url = f"{stream_base}/ws/plivo?{'&amp;'.join(plivo_params)}"
 
     record_call = form_dict.get("record_call") == "true" or request.query_params.get("record_call") == "true"
@@ -424,37 +504,28 @@ async def handle_plivo_inbound_call(request: Request):
 async def handle_plivo_hangup(request: Request):
     """Callback triggered by Plivo when call completes."""
     logger.info("Plivo call hangup callback received.")
-    lead_id = request.query_params.get("lead_id")
-    session_id = request.query_params.get("session_id")
-    form = {}
+
+    form_dict = {}
     try:
         form = await request.form()
-        if not lead_id:
-            lead_id = form.get("lead_id")
-        if not session_id:
-            session_id = form.get("session_id")
+        form_dict = dict(form)
     except Exception:
-        pass
-
-    # Extract carrier duration if provided
-    carrier_duration = None
-    raw_duration = form.get("Duration") or request.query_params.get("Duration")
-    if raw_duration:
         try:
-            carrier_duration = int(raw_duration)
-        except ValueError:
-            carrier_duration = None
+            form_dict = await request.json()
+        except Exception:
+            form_dict = dict(request.query_params)
 
-    if session_id:
-        try:
-            from app.db.connection import db_manager
-            from app.repositories.session_repository import SessionRepository
-            async with db_manager.get_session() as db:
-                await SessionRepository.close_session(db, session_id, duration=carrier_duration)
-                logger.info(f"Marked session {session_id} as CLOSED via Plivo hangup callback (duration={carrier_duration}s).")
-        except Exception as s_err:
-            logger.warning(f"Could not close DB session {session_id} on Plivo hangup: {s_err}")
+    # ── Security: Plivo Signature Validation ──
+    is_valid = validate_plivo_request(request, form_dict)
+    client_ip = request.client.host if request.client else "unknown"
+    if not is_valid:
+        if os.getenv("ENVIRONMENT", "development").lower() in ("production", "staging"):
+            logger.warning(f"SECURITY: Invalid Plivo signature on /plivo/hangup from {client_ip}. Rejecting.")
+            raise HTTPException(status_code=403, detail="Forbidden: Invalid Plivo Signature")
+        else:
+            logger.warning(f"SECURITY: Invalid Plivo signature on /plivo/hangup from {client_ip}. Bypassing in development mode.")
 
+    lead_id = form_dict.get("lead_id") or request.query_params.get("lead_id")
     if lead_id:
         try:
             from database.repository import LeadRepository
@@ -526,6 +597,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 call_uuid = websocket.query_params.get("call_uuid") or start_obj.get("callId", "")
                 session_id_val = websocket.query_params.get("session_id") or custom_params.get("session_id") or None
                 dispatch_id_val = websocket.query_params.get("dispatch_id") or custom_params.get("dispatch_id") or ""
+                brand_intro_query = websocket.query_params.get("include_brand_introduction") or custom_params.get("include_brand_introduction")
                 webhook_processing_start = float(custom_params.get("webhook_processing_start", 0.0))
                 previous_summary = custom_params.get("previous_summary", "")
                 persona_val = websocket.query_params.get("persona") or custom_params.get("persona") or "shreya"
@@ -540,6 +612,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             company_context = json.loads(company_context_raw)
                         except Exception:
                             company_context = {"company_name": company_context_raw}
+
+                if brand_intro_query is not None:
+                    if company_context is None:
+                        company_context = {}
+                    if isinstance(company_context, dict) and "include_brand_introduction" not in company_context:
+                        company_context["include_brand_introduction"] = brand_intro_query
 
                 # If company_context wasn't fully supplied, pull directly from Team A's database
                 if not company_context and (lead_id or domain):
@@ -705,6 +783,13 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
             company_context = json.loads(decoded_ctx)
         except Exception:
             company_context = {"company_name": company_ctx_param}
+
+    brand_intro_param = websocket.query_params.get("include_brand_introduction")
+    if brand_intro_param is not None:
+        if company_context is None:
+            company_context = {}
+        if isinstance(company_context, dict) and "include_brand_introduction" not in company_context:
+            company_context["include_brand_introduction"] = brand_intro_param
 
     import json
     import asyncio
@@ -912,6 +997,22 @@ async def run_voice_session(
     if not call_prompt_config and dispatch_id:
         call_prompt_config = call_config_registry.get_by_dispatch(dispatch_id)
 
+    # Cross-worker / registry expiration fallback rehydration:
+    # If the in-memory registry missed (e.g. worker boundary or TTL eviction),
+    # safely recover configuration from company_context to prevent silently enabling brand intro
+    # for a call explicitly configured with false.
+    if not call_prompt_config and isinstance(company_context, dict) and "include_brand_introduction" in company_context:
+        recovered_intro = company_context["include_brand_introduction"]
+        try:
+            call_prompt_config = CallPromptConfig(
+                call_prompt=company_context.get("call_prompt"),
+                objective=company_context.get("call_objective"),
+                include_brand_introduction=recovered_intro,
+            )
+            logger.info(f"Rehydrated call_prompt_config from company_context (brand_intro={recovered_intro})")
+        except Exception as rehydrate_err:
+            logger.warning(f"Failed to rehydrate call_prompt_config: {rehydrate_err}")
+
     sess_metadata = {
         "client_id": client_id_str,
         "previous_summary": previous_summary,
@@ -920,15 +1021,11 @@ async def run_voice_session(
         "provider_call_id": provider_call_id or "",
         "phone_number": phone_number,
         "dispatch_id": dispatch_id or "",
-        "has_call_prompt": bool(call_prompt_config is not None),
-        "persona": active_persona.id,
-        "persona_name": active_persona.name,
-        "persona_gender": active_persona.gender,
-        "voice": resolved_voice,
-        "voice_id": resolved_voice,
+        "has_call_prompt": bool(call_prompt_config is not None and call_prompt_config.call_prompt is not None),
+        "include_brand_introduction": getattr(call_prompt_config, "include_brand_introduction", True) if call_prompt_config else True,
     }
     if call_prompt_config:
-        sess_metadata["call_prompt_len"] = len(call_prompt_config.call_prompt)
+        sess_metadata["call_prompt_len"] = len(call_prompt_config.call_prompt) if call_prompt_config.call_prompt else 0
         sess_metadata["call_objective"] = call_prompt_config.objective or ""
         sess_metadata["call_criteria"] = call_prompt_config.custom_qualification_criteria or []
 

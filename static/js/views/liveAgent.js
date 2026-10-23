@@ -448,11 +448,14 @@ class LiveAgentView {
           </div>
 
           <!-- Traceability IDs Bar -->
-          <div style="display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 12px; background: rgba(107, 33, 168, 0.05); border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(107, 33, 168, 0.15);" class="font-mono text-muted">
+          <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 10px 12px; background: rgba(107, 33, 168, 0.05); border-radius: 6px; font-size: 11.5px; border: 1px solid rgba(107, 33, 168, 0.15);" class="font-mono text-muted">
             <div><strong>Lead:</strong> ${activeCall.lead_id || '—'}</div>
             <div><strong>Dispatch:</strong> ${activeCall.dispatch_id || '—'}</div>
             <div><strong>Session:</strong> ${activeCall.session_id || '—'}</div>
             <div><strong>Call UUID:</strong> ${activeCall.call_uuid || '—'}</div>
+            <span class="badge ${activeCall.include_brand_introduction !== false ? 'badge-info' : 'badge-neutral'}" style="font-size: 11px; font-family: inherit;">
+              <i class="fa-solid fa-tag"></i> Brand Intro: ${activeCall.include_brand_introduction !== false ? 'Enabled' : 'Disabled'}
+            </span>
           </div>
 
           <!-- Active Custom Script Preview (if configured) -->
@@ -592,6 +595,27 @@ class LiveAgentView {
                 <i class="fa-solid fa-shield-halved" style="color: #6b21a8;"></i>
                 <strong>Call Scoped:</strong> Injected as Level 3 LLM instruction for this call only. Core safety, phone validation, and auto-hangup remain active.
               </span>
+            </div>
+
+            <!-- Brand Introduction Configuration (Phase 2) -->
+            <div style="margin-top: 12px; padding: 10px 12px; background: #ffffff; border-radius: 6px; border: 1px solid var(--border-color);">
+              <label for="chkIncludeBrandIntroLive" style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; user-select: none;">
+                <input 
+                  type="checkbox" 
+                  id="chkIncludeBrandIntroLive" 
+                  name="include_brand_introduction"
+                  checked
+                  style="margin-top: 3px; width: 16px; height: 16px; accent-color: #6b21a8; cursor: pointer; flex-shrink: 0;"
+                />
+                <div style="flex: 1;">
+                  <div style="font-size: 12.5px; font-weight: 700; color: var(--text-primary); line-height: 1.3;">
+                    Introduce the agent as being from Flowiz
+                  </div>
+                  <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4; margin-top: 2px;">
+                    When enabled, the agent may mention Flowiz in its opening introduction. When disabled, the agent will not volunteer the brand name.
+                  </div>
+                </div>
+              </label>
             </div>
           </div>
 
@@ -953,6 +977,28 @@ class LiveAgentView {
       });
     }
 
+    // Load saved brand introduction setting from localStorage (persisted preference, default true)
+    const chkBrandLive = container.querySelector('#chkIncludeBrandIntroLive');
+    if (chkBrandLive) {
+      try {
+        const savedBrandPref = localStorage.getItem('flowiz_include_brand_introduction');
+        if (savedBrandPref !== null) {
+          chkBrandLive.checked = savedBrandPref === 'true';
+        } else {
+          chkBrandLive.checked = true;
+        }
+      } catch (e) {
+        chkBrandLive.checked = true;
+      }
+      chkBrandLive.addEventListener('change', () => {
+        try {
+          localStorage.setItem('flowiz_include_brand_introduction', chkBrandLive.checked ? 'true' : 'false');
+        } catch (e) {
+          console.warn('Could not persist brand intro setting to localStorage:', e);
+        }
+      });
+    }
+
     // Manual dial with call script
     const btnDial = container.querySelector('#btnManualDial');
     if (btnDial && txtPhone) {
@@ -961,13 +1007,77 @@ class LiveAgentView {
         const customerName = txtCustName ? txtCustName.value.trim() : '';
         const customerCtx = txtCustCtx ? txtCustCtx.value.trim() : '';
         const callPrompt = txtPrompt ? txtPrompt.value.trim() : '';
+        const includeBrandIntro = chkBrandLive ? chkBrandLive.checked : true;
 
-        await this.placeCall({
-          phone,
-          customerName,
-          customerCtx,
-          callPrompt
-        }, container, btnDial);
+        try {
+          btnDial.disabled = true;
+          btnDial.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Initiating Call...</span>';
+
+          // Check if dialed phone matches a known lead
+          const matchingLead = (window.store.allLeads || []).find(l => 
+            Array.isArray(l.phones) && l.phones.some(p => p.replace(/[^\d]/g, '').endsWith(phone.replace(/[^\d]/g, '').slice(-10)))
+          );
+
+          const leadId = matchingLead ? (matchingLead.domain || matchingLead.website) : (customerName ? customerName.toLowerCase().replace(/[^a-z0-9]/g, '_') : 'manual_dial');
+          const companyName = customerName || (matchingLead ? matchingLead.company_name : 'Manual Telecom Call');
+          const sessionId = 'sess_' + Date.now();
+          const dispatchId = 'disp_' + Date.now();
+
+          window.store.setActiveCall({
+            lead_id: leadId,
+            dispatch_id: dispatchId,
+            session_id: sessionId,
+            call_uuid: 'pending',
+            company_name: companyName,
+            phone: phone,
+            call_prompt: callPrompt || undefined,
+            has_call_prompt: Boolean(callPrompt),
+            call_prompt_len: callPrompt ? callPrompt.length : 0,
+            include_brand_introduction: includeBrandIntro,
+            call_status: 'initiating'
+          });
+
+          this.startCallTimer();
+
+          const companyContext = {
+            lead_id: leadId,
+            company_name: companyName,
+            domain: matchingLead ? (matchingLead.domain || matchingLead.website) : leadId,
+            industry: matchingLead ? matchingLead.industry : 'B2B Services',
+            location: matchingLead ? matchingLead.location : 'India',
+            company_summary: customerCtx || (matchingLead ? matchingLead.description : 'Outbound qualification prospect')
+          };
+
+          const payload = {
+            phoneNumber: phone,
+            phone_number: phone,
+            company_context: companyContext,
+            lead_id: leadId,
+            session_id: sessionId,
+            dispatch_id: dispatchId,
+            call_prompt: callPrompt || undefined,
+            include_brand_introduction: includeBrandIntro
+          };
+
+          const res = await window.api.triggerOutboundCall(phone, payload);
+          if (res && res.status === 'success') {
+            window.store.updateActiveCall({
+              call_status: 'in_progress',
+              call_uuid: res.callSid || res.call_id
+            });
+            this.render(container);
+          }
+        } catch (err) {
+          alert('Failed to place outbound call: ' + (err.message || err));
+          window.store.clearActiveCall();
+          this.stopCallTimer();
+          this.render(container);
+        } finally {
+          if (btnDial) {
+            btnDial.disabled = false;
+            btnDial.innerHTML = '<i class="fa-solid fa-phone-volume"></i><span>Launch AI Call with Script</span>';
+          }
+        }
       });
     }
 

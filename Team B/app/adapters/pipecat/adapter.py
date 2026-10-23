@@ -26,7 +26,7 @@ from .exceptions import PipecatAdapterError
 from .lifecycle import PipecatLifecycleManager
 from .mapper import PipecatPipelineMapper
 from .transport import PipecatTransportAdapter
-from app.llm.prompts import VOICE_SYSTEM_PROMPT 
+from app.llm.prompts import VOICE_SYSTEM_PROMPT, build_voice_system_prompt
 
 
 # ── Fallback mock (kept for test compatibility) ───────────────────────
@@ -58,13 +58,15 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import Frame, StartFrame, OutputAudioRawFrame, TTSStartedFrame, TTSStoppedFrame, BotStoppedSpeakingFrame
 
 class GreetingPlayerProcessor(FrameProcessor):
-    def __init__(self, greeting_wav_path: str, **kwargs):
+    def __init__(self, greeting_wav_path: str, shared_state: Optional[dict] = None, **kwargs):
         super().__init__(**kwargs)
         self.greeting_wav_path = greeting_wav_path
+        self.shared_state = shared_state if shared_state is not None else {}
         self._played = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
+        if getattr(self, "_task_manager", None):
+            await super().process_frame(frame, direction)
         
         # Check if we should play the greeting
         if isinstance(frame, StartFrame) and not self._played:
@@ -79,29 +81,175 @@ class GreetingPlayerProcessor(FrameProcessor):
         try:
             logger.info(f"GreetingPlayerProcessor playing {self.greeting_wav_path} directly downstream...")
             import soundfile as sf
+            import numpy as np
+            import soxr
             data, sample_rate = sf.read(self.greeting_wav_path, dtype="int16")
+            
+            # Resample to 8000Hz (telephony standard) upfront to avoid streaming resampler buffer stalls
+            target_sample_rate = 8000
+            if sample_rate != target_sample_rate:
+                data = soxr.resample(data, sample_rate, target_sample_rate, quality="HQ")
+                sample_rate = target_sample_rate
+
             num_channels = 1 if data.ndim == 1 else data.shape[1]
-            bytes_data = data.tobytes()
+            bytes_data = data.astype(np.int16).tobytes()
             
             # Chunk into 50ms frames (sample_rate * 0.05 * 2 bytes * num_channels)
             chunk_bytes = int(sample_rate * 0.05) * 2 * num_channels
             
+            cur_gen = self.shared_state.get("current_generation_id", 1)
+            self.shared_state["active_generation_id"] = cur_gen
+            self.shared_state["interrupted_generation_id"] = None
+            self.shared_state["tts_speaking"] = True
+
             # Play greeting
             await self.push_frame(TTSStartedFrame(), FrameDirection.DOWNSTREAM)
             for i in range(0, len(bytes_data), chunk_bytes):
+                if self.shared_state.get("active_generation_id") != cur_gen:
+                    logger.info("GreetingPlayerProcessor stopped due to user barge-in.")
+                    break
                 chunk = bytes_data[i:i+chunk_bytes]
-                await self.push_frame(OutputAudioRawFrame(
+                audio_frame = OutputAudioRawFrame(
                     audio=chunk,
                     sample_rate=sample_rate,
                     num_channels=num_channels
-                ), FrameDirection.DOWNSTREAM)
+                )
+                audio_frame._generation_id = cur_gen
+                await self.push_frame(audio_frame, FrameDirection.DOWNSTREAM)
                 # Yield to simulate real-time playback streaming (50ms chunks need ~50ms sleep)
                 await asyncio.sleep(0.05)
             await self.push_frame(TTSStoppedFrame(), FrameDirection.DOWNSTREAM)
             await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+            self.shared_state["tts_speaking"] = False
             logger.info("GreetingPlayerProcessor finished playing greeting.")
         except Exception as e:
             logger.error(f"Failed to play greeting wav: {e}")
+
+
+def apply_micro_fade_out(pcm_bytes: bytes, num_samples: int = 40) -> bytes:
+    """Applies a 5ms linear ramp down to zero on 16-bit mono PCM bytes to eliminate DC step-discontinuity clicks."""
+    if len(pcm_bytes) < num_samples * 2:
+        return pcm_bytes
+    import struct
+    total_samples = len(pcm_bytes) // 2
+    samples = list(struct.unpack(f"<{total_samples}h", pcm_bytes))
+    start_idx = max(0, total_samples - num_samples)
+    fade_len = total_samples - start_idx
+    for i in range(fade_len):
+        factor = 1.0 - (float(i) / float(fade_len))
+        samples[start_idx + i] = int(samples[start_idx + i] * factor)
+    return struct.pack(f"<{total_samples}h", *samples)
+
+
+class AudioInterruptionGate(FrameProcessor):
+    """
+    Sits directly before transport.output() in the pipeline.
+    Guarantees:
+    1. Validates response-generation ID on every outbound AudioRawFrame before it reaches transport.
+    2. Drops any late chunks from superseded or invalidated generations and records metrics.
+    3. Strictly rejects untagged audio frames unless explicitly marked as control audio (_is_control_audio).
+    4. Enforces 16-bit PCM sample alignment (even number of bytes) on all outbound audio.
+    5. On genuine barge-in (InterruptionFrame), resets audio sequence state, invalidates active generation,
+       and clears speaking state immediately, ignoring late interruptions for already-superseded turns.
+    """
+
+    def __init__(self, shared_state: Optional[dict] = None, **kwargs):
+        super().__init__(**kwargs)
+        self.shared_state = shared_state if shared_state is not None else {}
+        self._seq_num = 0
+        self._carry_bytes: bytes = b""
+        self._current_gen: Optional[int] = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if getattr(self, "_task_manager", None):
+            await super().process_frame(frame, direction)
+
+        from pipecat.frames.frames import InterruptionFrame, AudioRawFrame
+
+        if isinstance(frame, InterruptionFrame):
+            # Check if this interruption is for an older, already superseded generation
+            int_gen = getattr(frame, "_generation_id", None)
+            active_gen = self.shared_state.get("active_generation_id")
+            if int_gen is not None and active_gen is not None and int_gen < active_gen:
+                logger.info(
+                    f"[AUDIO_GATE] LATE_INTERRUPTION_IGNORED | "
+                    f"interruption_gen={int_gen} | active_gen={active_gen}"
+                )
+                await self.push_frame(frame, direction)
+                return
+
+            cur_gen = self.shared_state.get("current_generation_id", 0)
+            self.shared_state["active_generation_id"] = None
+            self.shared_state["interrupted_generation_id"] = cur_gen
+            self.shared_state["tts_speaking"] = False
+            self._seq_num = 0
+            self._carry_bytes = b""
+            self._current_gen = None
+            await self.push_frame(frame, direction)
+            return
+
+        elif isinstance(frame, AudioRawFrame):
+            active_gen = self.shared_state.get("active_generation_id")
+            interrupted_gen = self.shared_state.get("interrupted_generation_id")
+            raw_gen = getattr(frame, "_generation_id", getattr(frame, "generation_id", None))
+            is_control = getattr(frame, "_is_control_audio", False) or self.shared_state.get("allow_untagged_audio", False)
+
+            # Validate generation ID format (must be positive integer)
+            valid_gen = isinstance(raw_gen, int) and raw_gen > 0
+            frame_gen = raw_gen if valid_gen else None
+
+            # Policy Rule 1: Untagged or malformed generation ID audio is rejected unless explicit control audio
+            if frame_gen is None:
+                if not is_control:
+                    self.shared_state["late_chunks_dropped"] = self.shared_state.get("late_chunks_dropped", 0) + 1
+                    logger.warning(
+                        f"[AUDIO_GATE] UNTAGGED_OR_MALFORMED_AUDIO_DROPPED | "
+                        f"raw_gen={raw_gen} | active_gen={active_gen} | bytes={len(frame.audio)}"
+                    )
+                    return
+                # Authorized control audio allowed through
+
+            # Policy Rule 2: Active generation has been cancelled or invalidated mid-interruption
+            elif active_gen is None:
+                self.shared_state["late_chunks_dropped"] = self.shared_state.get("late_chunks_dropped", 0) + 1
+                logger.info(
+                    f"[INTERRUPTION_DIAGNOSTICS] LATE_CHUNK_DROPPED_AT_GATE | "
+                    f"frame_gen={frame_gen} | in_cancellation=True | bytes={len(frame.audio)}"
+                )
+                return
+
+            # Policy Rule 3: Stamped with an older or mismatched generation ID
+            elif frame_gen != active_gen:
+                self.shared_state["late_chunks_dropped"] = self.shared_state.get("late_chunks_dropped", 0) + 1
+                logger.info(
+                    f"[INTERRUPTION_DIAGNOSTICS] LATE_CHUNK_DROPPED_AT_GATE | "
+                    f"frame_gen={frame_gen} | active_gen={active_gen} | bytes={len(frame.audio)}"
+                )
+                return
+
+            if frame_gen != self._current_gen:
+                self._carry_bytes = b""
+                self._current_gen = frame_gen
+
+            if self._carry_bytes:
+                frame.audio = self._carry_bytes + frame.audio
+                self._carry_bytes = b""
+
+            # Enforce 16-bit PCM sample alignment
+            if len(frame.audio) % 2 != 0:
+                self._carry_bytes = frame.audio[-1:]
+                frame.audio = frame.audio[:-1]
+
+            if not frame.audio:
+                return
+
+            self._seq_num += 1
+            frame._seq_num = self._seq_num
+
+            await self.push_frame(frame, direction)
+            return
+
+        await self.push_frame(frame, direction)
 
 
 # ── Real pipeline task builder ────────────────────────────────────────
@@ -173,7 +321,12 @@ def _build_real_pipeline_task(
         from app.llm.company_faq import get_faq_context_block
 
         session_id = bridge._session_id
-        shared_state = {}
+        shared_state = {
+            "current_turn_id": 1,
+            "current_generation_id": 1,
+            "active_generation_id": 1,
+            "interrupted_generation_id": None,
+        }
         
         from app.services.persona_registry import get_persona
         from app.llm.prompts import build_voice_system_prompt
@@ -182,7 +335,14 @@ def _build_real_pipeline_task(
         p_name = p.name
 
         # ── LEVEL 1: Immutable Platform & Conversational Rules ──────────────
-        system_content = build_voice_system_prompt(p) + "\n\n"
+        include_brand_intro = True
+        if call_prompt_config:
+            if hasattr(call_prompt_config, "include_brand_introduction"):
+                include_brand_intro = bool(call_prompt_config.include_brand_introduction)
+            elif isinstance(call_prompt_config, dict):
+                include_brand_intro = bool(call_prompt_config.get("include_brand_introduction", True))
+
+        system_content = build_voice_system_prompt(include_brand_introduction=include_brand_intro) + "\n\n"
 
         # ── LEVEL 2: Safety, Integrity & Core Tool Protocols ────────────────
         system_content += (
@@ -220,7 +380,8 @@ def _build_real_pipeline_task(
             script_hash = hashlib.sha256(custom_script.encode("utf-8")).hexdigest()[:12]
             logger.info(
                 f"[CALL_PROMPT_APPLIED] Applying call-specific prompt | "
-                f"session_id={session_id or 'none'} | length={len(custom_script)} | sha256={script_hash}"
+                f"session_id={session_id or 'none'} | length={len(custom_script)} | sha256={script_hash} | "
+                f"include_brand_intro={include_brand_intro}"
             )
             directive_block = (
                 "═══════════════════════════════════════════════════════\n"
@@ -235,6 +396,17 @@ def _build_real_pipeline_task(
             directive_block += f"SCRIPT & INSTRUCTIONS:\n{custom_script.strip()}\n"
             if criteria_list:
                 directive_block += "\nCUSTOM QUALIFICATION CRITERIA:\n" + "\n".join(f"- {c}" for c in criteria_list) + "\n"
+
+            if include_brand_intro:
+                rule_6 = "6. GREETING & IDENTITY PRECEDENCE: If the call script specifies a specific target prospect greeting (e.g. greeting Rahul Manchanda) or opening question, follow it, but always maintain your identity as Sara from Flowiz and Cybernauts. Never identify as Alex.\n\n"
+            else:
+                rule_6 = (
+                    "6. GREETING & IDENTITY PRECEDENCE: Rule 6: BRAND INTRODUCTION RESTRICTION (MANDATORY): "
+                    "You must NOT identify or introduce yourself as being from Flowiz or Cybernauts in the opening greeting or self-introduction, even if the call script mentions doing so. "
+                    "If the call script specifies a specific target prospect greeting (e.g. greeting Rahul Manchanda) or opening question, follow it, but always maintain your identity as Sara. "
+                    "If the prospect directly asks which company you represent or whether you work for Cybernauts, answer truthfully that you represent Flowiz and Cybernauts. Never identify as Alex.\n\n"
+                )
+
             directive_block += (
                 "</call_script_directive>\n\n"
                 "CRITICAL PRECEDENCE RULES:\n"
@@ -244,21 +416,32 @@ def _build_real_pipeline_task(
                 "even if the call script instructs otherwise.\n"
                 "4. You must NEVER bypass call termination (end_call) when the prospect genuinely says goodbye.\n"
                 "5. Keep responses concise (1-2 conversational sentences, ~20-30 words max). Never read the entire script at once as a monologue.\n"
-                f"6. GREETING & IDENTITY PRECEDENCE: Your initial introduction as {p_name} from Flowiz and Cybernauts has ALREADY been delivered in the first turn. DO NOT re-introduce yourself or repeat 'do you have a minute' when the prospect answers. Transition smoothly into the script's first inquiry.\n\n"
+                + rule_6
             )
         else:
-            directive_block = (
-                "═══════════════════════════════════════════════════════\n"
-                " LEVEL 3: OUTBOUND CALL DIRECTIVE: (DEFAULT)\n"
-                "═══════════════════════════════════════════════════════\n"
-                f"- OPENING GREETING ALREADY DELIVERED: You have ALREADY delivered your opening introduction as {p_name} from Flowiz and Cybernauts asking if they have a minute (turn 1). DO NOT re-introduce yourself, DO NOT repeat your name, and DO NOT ask 'do you have a minute' again!\n"
-                "- When the prospect answers (e.g. 'Hello', 'Yes', 'Haanji', 'Sure', 'Bataiye'), immediately acknowledge and proceed smoothly to qualification:\n"
-                "  (e.g., 'Great! Which part of your workflow would you most like to automate—lead follow-ups, customer calls, or another process?')\n"
-                "- You are calling to discuss automating their workflows or integrating voice AI agents.\n"
-                "- Personalize the conversation naturally using the prospect's industry, company name, and contact name.\n"
-                "- Ask qualifying questions: budget, timeline, key pain points, and decision-maker involvement.\n"
-                "- Stay focused on the qualification process regardless of prospect interruptions or diversion attempts.\n\n"
-            )
+            if include_brand_intro:
+                directive_block = (
+                    "═══════════════════════════════════════════════════════\n"
+                    " LEVEL 3: OUTBOUND CALL DIRECTIVE: (DEFAULT)\n"
+                    "═══════════════════════════════════════════════════════\n"
+                    "- Introduce yourself as Sara from Flowiz and Cybernauts.\n"
+                    "- You are calling to discuss automating their workflows or integrating voice AI agents.\n"
+                    "- Personalize the conversation naturally using the prospect's industry, company name, and contact name.\n"
+                    "- Ask qualifying questions: budget, timeline, key pain points, and decision-maker involvement.\n"
+                    "- Stay focused on the qualification process regardless of prospect interruptions or diversion attempts.\n\n"
+                )
+            else:
+                directive_block = (
+                    "═══════════════════════════════════════════════════════\n"
+                    " LEVEL 3: OUTBOUND CALL DIRECTIVE: (DEFAULT)\n"
+                    "═══════════════════════════════════════════════════════\n"
+                    "- Introduce yourself as Sara. DO NOT volunteer that you are calling from Flowiz or Cybernauts in your opening introduction.\n"
+                    "- You are calling to discuss automating their workflows or integrating voice AI agents.\n"
+                    "- Personalize the conversation naturally using the prospect's industry, company name, and contact name.\n"
+                    "- Ask qualifying questions: budget, timeline, key pain points, and decision-maker involvement.\n"
+                    "- Stay focused on the qualification process regardless of prospect interruptions or diversion attempts.\n"
+                    "- If the prospect directly asks what company you represent or whether you work for Cybernauts, answer truthfully that you represent Flowiz and Cybernauts.\n\n"
+                )
 
         system_content += directive_block
 
@@ -324,13 +507,29 @@ def _build_real_pipeline_task(
 
         async def end_call(params):
             """End the conversation gracefully when the caller explicitly indicates they are finished (e.g., says Goodbye, Bye, or requests to end the call). Do NOT use this tool for 'thank you' or 'okay'."""
-            logger.info("ACTIONABLE AI: LLM triggered 'end_call' tool! Setting hangup_requested=True.")
-            shared_state["hangup_requested"] = True
-            if params.result_callback:
-                await params.result_callback({"success": True, "hangup_requested": True, "message": "Call ending initialized. Please say a brief goodbye to the user."})
+            logger.info("ACTIONABLE AI: LLM triggered 'end_call' tool!")
+            qm = shared_state.get("qualification_machine")
+            if qm:
+                await qm.handle_end_call_request(params=params)
+            else:
+                shared_state["hangup_requested"] = True
+                if getattr(params, "result_callback", None):
+                    await params.result_callback({"success": True, "hangup_requested": True, "message": "Call ending initialized. Please say a brief goodbye to the user."})
 
         from app.services.lead_manager import save_lead
         from app.services.faq_manager import fetch_faq
+
+        async def wrapped_save_lead(params, name: str, phone: str, project_details: str = ""):
+            qm = shared_state.get("qualification_machine")
+            if qm:
+                return await qm.execute_save(
+                    save_lead_func=save_lead,
+                    params=params,
+                    custom_name=name,
+                    custom_phone=phone,
+                    custom_details=project_details,
+                )
+            return await save_lead(params, name, phone, project_details)
         
         tools_schema = None
         try:
@@ -409,12 +608,11 @@ def _build_real_pipeline_task(
         asst_agg = LLMAssistantAggregator(context)
         
         # Build enhanced pipeline sequence:
-        # STT → SemanticEndCallDetector → LanguageRouter → TurnGuard → user_agg → [filler] → LLM
+        # STT → SemanticEndCallDetector → LanguageRouter → user_agg → TurnGuard → [filler] → LLM
         #      → TurnGuardFilter → ToolInterceptor → TTS → CallTerminator → asst_agg
         new_processors = []
         from app.adapters.pipecat.language_router import LanguageRoutingProcessor, CallTerminationProcessor
         from app.adapters.pipecat.tool_interceptor import ToolInterceptionProcessor
-        from app.adapters.pipecat.diagnostics import DiagnosticsProcessor
         from app.adapters.pipecat.diagnostics import DiagnosticsProcessor
         from app.adapters.pipecat.llm_filler_processor import DynamicLLMFillerProcessor
         from app.adapters.pipecat.turn_guard import TurnGuardProcessor, TurnGuardFilter
@@ -431,28 +629,38 @@ def _build_real_pipeline_task(
         turn_guard_filter = TurnGuardFilter(shared_state=shared_state)
         semantic_end_detector = SemanticEndCallDetector(shared_state=shared_state)
         
-        # Instantiate greeting processor only if explicitly requested via environment (bypassed for personas to ensure authentic voice consistency)
+        # Instantiate greeting processor if greetings.wav exists, brand intro is enabled, it's a new customer, and NO custom call prompt or company context was provided
         greeting_processor = None
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        has_custom_prompt = bool(call_prompt_config)
-        if os.getenv("USE_STATIC_GREETING_WAV", "False").lower() == "true" and not previous_summary and not has_custom_prompt and not company_context:
+        has_custom_prompt = bool(
+            call_prompt_config and (
+                getattr(call_prompt_config, "call_prompt", None) or
+                (isinstance(call_prompt_config, dict) and call_prompt_config.get("call_prompt")) or
+                isinstance(call_prompt_config, str)
+            )
+        )
+        if include_brand_intro and os.getenv("ENABLE_INITIAL_GREETING", "True").lower() == "true" and not previous_summary and not has_custom_prompt and not company_context:
             greetings_wav_path = os.path.join(project_root, "greetings.wav")
             if os.path.exists(greetings_wav_path):
-                greeting_processor = GreetingPlayerProcessor(greetings_wav_path)
+                greeting_processor = GreetingPlayerProcessor(greetings_wav_path, shared_state=shared_state)
         
         for p in pipecat_processors:
             if isinstance(p, (GroqLLMService, OpenAILLMService)) or p.__class__.__name__ == "ResilientLLMProcessor":
-                # Upstream of LLM
+                # Upstream of LLM: STT -> SemanticEndCallDetector -> LanguageRouter -> user_agg -> TurnGuard -> LLM
                 new_processors.append(semantic_end_detector)
                 new_processors.append(LanguageRoutingProcessor(shared_state=shared_state))
-                new_processors.append(turn_guard_proc)
                 new_processors.append(user_agg)
+                new_processors.append(turn_guard_proc)
                 new_processors.append(p)
                 # Downstream of LLM: filter stale turns, parse dynamic LLM filler, then tool interception
                 new_processors.append(turn_guard_filter)
                 new_processors.append(dynamic_filler_proc)
                 new_processors.append(ToolInterceptionProcessor(shared_state=shared_state))
-            elif p.__class__.__name__.endswith("TTSService") or "TTS" in p.__class__.__name__:
+            elif p.__class__.__name__.endswith("TTSService") or p.__class__.__name__ == "ResilientTTSProcessor":
+                if hasattr(p, "set_shared_state"):
+                    p.set_shared_state(shared_state)
+                elif hasattr(p, "shared_state"):
+                    p.shared_state = shared_state
                 new_processors.append(p)
                 new_processors.append(CallTerminationProcessor(shared_state=shared_state))
                 new_processors.append(asst_agg)
@@ -469,7 +677,7 @@ def _build_real_pipeline_task(
         if llm is not None:
             try:
                 llm.register_function("end_call", end_call)
-                llm.register_function("save_lead", save_lead)
+                llm.register_function("save_lead", wrapped_save_lead)
                 # fetch_faq is declared in the prompt but gated, register defensively
                 try:
                     llm.register_function("fetch_faq", fetch_faq)
@@ -483,10 +691,17 @@ def _build_real_pipeline_task(
         # No LLM found in processors — pass them through unchanged
         processors.extend(pipecat_processors)
 
-    # 3. Transport output (speaker) at the back
-
     if transport is not None:
+        if hasattr(transport, "set_shared_state"):
+            transport.set_shared_state(shared_state)
         real_transport = transport.get_pipecat_transport()
+        if hasattr(real_transport, "set_shared_state"):
+            real_transport.set_shared_state(shared_state)
+        if hasattr(getattr(real_transport, "_params", None), "serializer"):
+            ser = real_transport._params.serializer
+            if hasattr(ser, "set_shared_state"):
+                ser.set_shared_state(shared_state)
+        processors.append(AudioInterruptionGate(shared_state=shared_state))
         processors.append(real_transport.output())
 
     real_pipeline = PipecatPipeline(processors)
@@ -515,7 +730,7 @@ def _build_real_pipeline_task(
                 TranscriptionFrame, InterimTranscriptionFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TextFrame,
                 TTSStartedFrame, TTSStoppedFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                 StartFrame, EndFrame, AudioRawFrame, UserAudioRawFrame, LLMContextFrame, LLMRunFrame,
-                InterruptionFrame
+                InterruptionFrame, FunctionCallsStartedFrame, FunctionCallInProgressFrame
             )
             
             frame_type = type(frame).__name__
@@ -529,7 +744,7 @@ def _build_real_pipeline_task(
                 logger.info(f"[VOICE] user audio received | session_id={bridge._session_id}")
                 self._first_user_audio_logged = True
             
-            if isinstance(frame, UserStartedSpeakingFrame):
+            if isinstance(frame, UserStartedSpeakingFrame) and source_class in ("VADProcessor", "SileroVADAnalyzer", "SileroVADProcessor"):
                 current_state_val = getattr(bridge._fsm, "get_current_state", lambda: None)()
                 state_str = current_state_val.name if hasattr(current_state_val, "name") else str(current_state_val)
 
@@ -558,20 +773,32 @@ def _build_real_pipeline_task(
                 self._first_partial_logged = False
                 self._first_llm_token_logged = False
                 self._first_tts_chunk_logged = False
+                self._first_audio_packet_sent = False
                 self._llm_response_emitted_for_turn = False
                 
-            elif isinstance(frame, UserStoppedSpeakingFrame):
+            elif isinstance(frame, UserStoppedSpeakingFrame) and source_class in ("VADProcessor", "SileroVADAnalyzer", "SileroVADProcessor"):
                 logger.info(f"[VOICE] USER_SPEECH_STOPPED | source={source_class} | session_id={bridge._session_id}")
                 if latency_tracker:
                     latency_tracker.on_vad_stop()
 
             elif isinstance(frame, InterruptionFrame):
+                self._tts_speaking = False
+                shared_state["tts_speaking"] = False
+                self._first_audio_packet_sent = False
+                bridge.on_audio_finished()
                 if self._llm_generating:
                     logger.info(
                         f"[INTERRUPTION_DIAGNOSTICS] LLM_STREAM_CANCELLED | turn_id={current_turn} | "
                         f"source={source_class} | session_id={bridge._session_id}"
                     )
                     self._llm_generating = False
+                try:
+                    from app.adapters.pipecat.context_manager import get_session_context
+                    sess_ctx = get_session_context(bridge._session_id)
+                    if sess_ctx and sess_ctx.critical_memory:
+                        sess_ctx.critical_memory.on_interruption()
+                except Exception:
+                    pass
                 
             elif isinstance(frame, InterimTranscriptionFrame) and frame.text and not getattr(frame, 'user_id', None) == "bot":
                 if latency_tracker:
@@ -588,11 +815,26 @@ def _build_real_pipeline_task(
                         latency_tracker.on_stt_transcript()
                     bridge.on_transcript_ready(clean_text)
 
-            elif isinstance(frame, (LLMContextFrame, LLMRunFrame)) and source_class == "LLMUserAggregator":
+            elif isinstance(frame, (LLMContextFrame, LLMRunFrame)) and source_class in ("LLMUserAggregator", "FlowizUserAggregator"):
                 logger.info(f"[VOICE] LLM input received | session_id={bridge._session_id}")
                 if latency_tracker:
-                    latency_tracker.on_turn_finalized()
+                    active_timeout = shared_state.get("last_active_timeout")
+                    phone_confirmed = shared_state.get("phone_confirmed", False)
+                    in_phone_capture = shared_state.get("in_phone_capture", False) and not phone_confirmed
+                    is_phone_turn = shared_state.get("last_turn_is_phone", False) or in_phone_capture or (active_timeout is not None and (active_timeout > 0.55 or active_timeout == 0.15))
+                    latency_tracker.on_turn_finalized(timeout=active_timeout, is_phone_turn=is_phone_turn)
                     latency_tracker.on_llm_request_started()
+                    if is_phone_turn:
+                        phone_norm = shared_state.get("phone_normalizer")
+                        digit_count = len(phone_norm.digits) if phone_norm else 0
+                        status = phone_norm.status.value if phone_norm else ("complete" if digit_count == 10 else "collecting")
+                        latency_tracker.on_phone_event(
+                            digit_count=digit_count,
+                            status=status,
+                            timeout=active_timeout or 0.45,
+                            is_complete=(digit_count == 10),
+                            is_confirmed=phone_confirmed,
+                        )
                     if hasattr(self.context, "get_token_breakdown"):
                         breakdown = self.context.get_token_breakdown()
                         latency_tracker.on_llm_context_tokens(breakdown)
@@ -603,30 +845,41 @@ def _build_real_pipeline_task(
                             f"mem={breakdown.memory_tokens} | hist={breakdown.recent_history_tokens} | tools={breakdown.tool_schema_tokens}"
                         )
 
-            elif isinstance(frame, LLMFullResponseStartFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "OpenAIResponsesHttpLLMService", "ResilientLLMProcessor"):
+            elif isinstance(frame, LLMFullResponseStartFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "OpenAIResponsesHttpLLMService", "ResilientLLMProcessor", "PooledOpenAILLMService"):
                 logger.info(f"[VOICE] LLM response started | source={source_class} | session_id={bridge._session_id}")
                 self._current_llm_response = ""
                 self._first_llm_token_logged = False
+                self._first_audio_packet_sent = False
                 self._llm_generating = True
-                if latency_tracker:
-                    latency_tracker.on_llm_first_token()
-                    ttft = latency_tracker.current_turn.llm_ttft if (latency_tracker.current_turn and hasattr(latency_tracker.current_turn, "llm_ttft")) else None
-                    if ttft is not None:
-                        logger.info(f"[TTFT_BENCHMARK] LLM TTFT: {ttft:.3f} s (T5 - T4) | turn_id={current_turn}")
                 bridge.on_llm_response_started()
                 self._llm_response_emitted_for_turn = False
 
             elif isinstance(frame, TextFrame):
-                if source_class in ("GroqLLMService", "OpenAILLMService", "OpenAIResponsesHttpLLMService", "ResilientLLMProcessor"):
+                if source_class in ("GroqLLMService", "OpenAILLMService", "OpenAIResponsesHttpLLMService", "ResilientLLMProcessor", "PooledOpenAILLMService"):
                     if not self._first_llm_token_logged:
                         logger.info(f"[VOICE] First LLM token: '{frame.text}' | session_id={bridge._session_id}")
                         self._first_llm_token_logged = True
+                        if latency_tracker:
+                            latency_tracker.on_llm_first_token()
+                            ttft = latency_tracker.current_turn.llm_ttft if (latency_tracker.current_turn and hasattr(latency_tracker.current_turn, "llm_ttft")) else None
+                            if ttft is not None:
+                                logger.info(f"[TTFT_BENCHMARK] LLM TTFT: {ttft:.3f} s (T5 - T4) | turn_id={current_turn}")
                     self._current_llm_response += frame.text
                 elif source_class in ("DynamicLLMFillerProcessor", "ToolInterceptionProcessor"):
                     if latency_tracker and hasattr(latency_tracker, "on_tts_text"):
                         latency_tracker.on_tts_text()
 
-            elif isinstance(frame, LLMFullResponseEndFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "OpenAIResponsesHttpLLMService", "ResilientLLMProcessor"):
+            elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallInProgressFrame)):
+                if source_class in ("GroqLLMService", "OpenAILLMService", "OpenAIResponsesHttpLLMService", "ResilientLLMProcessor", "PooledOpenAILLMService"):
+                    if not self._first_llm_token_logged:
+                        self._first_llm_token_logged = True
+                        if latency_tracker:
+                            latency_tracker.on_llm_first_token()
+                            ttft = latency_tracker.current_turn.llm_ttft if (latency_tracker.current_turn and hasattr(latency_tracker.current_turn, "llm_ttft")) else None
+                            if ttft is not None:
+                                logger.info(f"[TTFT_BENCHMARK] LLM TTFT (tool call): {ttft:.3f} s (T5 - T4) | turn_id={current_turn}")
+
+            elif isinstance(frame, LLMFullResponseEndFrame) and source_class in ("GroqLLMService", "OpenAILLMService", "OpenAIResponsesHttpLLMService", "ResilientLLMProcessor", "PooledOpenAILLMService"):
                 full_resp = self._current_llm_response.strip()
                 logger.info(f"[VOICE] LLM response received: {full_resp}")
                 self._llm_generating = False
@@ -635,6 +888,11 @@ def _build_real_pipeline_task(
                 if not self._llm_response_emitted_for_turn and full_resp:
                     bridge.on_llm_response_ready(full_resp)
                     self._llm_response_emitted_for_turn = True
+                if self.context and full_resp:
+                    self.context.add_message({
+                        "role": "assistant",
+                        "content": full_resp,
+                    })
                 
             elif isinstance(frame, TTSStartedFrame) and ("TTS" in source_class or source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor")):
                 logger.info(f"[VOICE] TTS input received / TTS audio started | source={source_class} | session_id={bridge._session_id}")
@@ -648,6 +906,8 @@ def _build_real_pipeline_task(
                 if not getattr(self, "_first_audio_packet_sent", False):
                     logger.info(f"[VOICE] TTS audio generated / audio published | source={source_class} | session_id={bridge._session_id}")
                     self._first_audio_packet_sent = True
+                    if latency_tracker:
+                        latency_tracker.on_transport_audio()
                 
             elif isinstance(frame, TTSStoppedFrame) and ("TTS" in source_class or source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor")):
                 logger.info(f"[VOICE] TTS audio playback completed | source={source_class} | session_id={bridge._session_id}")
@@ -660,12 +920,14 @@ def _build_real_pipeline_task(
                 logger.info(f"[VOICE] Pipeline shutdown initiated | session_id={bridge._session_id}")
 
     from pipecat.pipeline.task import PipelineParams
+    observer = EventBridgeObserver(context)
     task = PipelineTask(
         real_pipeline, 
         params=PipelineParams(allow_interruptions=True),
-        observers=[EventBridgeObserver(context)],
+        observers=[observer],
         idle_timeout_secs=3600
     )
+    task._event_bridge_observer = observer
 
     # Attach the LLMContext to the task so the adapter can access it later for greetings
     task._llm_context = context
@@ -683,6 +945,9 @@ def _build_real_pipeline_task(
                 shared_state["auth_id"] = transport.auth_id
             if getattr(transport, "auth_token", None):
                 shared_state["auth_token"] = transport.auth_token
+
+    task._pipeline_processors = processors
+    task.__iter__ = processors.__iter__
 
     return task
 
@@ -881,10 +1146,7 @@ class PipecatAdapter:
             
             import os
             import wave
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            import time
-            call_start_ts = time.perf_counter()
-            self._call_start_ts = call_start_ts
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
             if os.getenv("ENABLE_INITIAL_GREETING", "True").lower() == "true":
                 from pipecat.frames.frames import TTSSpeakFrame
                 from app.events.event_types import AssistantGreetingStarted
@@ -906,23 +1168,118 @@ class PipecatAdapter:
                 self.event_bus.publish_sync(
                     AssistantGreetingStarted(session_id=self.session_id, payload={"text": greeting_text})
                 )
+                
+                include_brand_intro = True
+                cpc = getattr(self, "call_prompt_config", None)
+                if cpc:
+                    if hasattr(cpc, "include_brand_introduction"):
+                        include_brand_intro = bool(cpc.include_brand_introduction)
+                    elif isinstance(cpc, dict):
+                        include_brand_intro = bool(cpc.get("include_brand_introduction", True))
 
-                logger.bind(session_id=self.session_id).info(
-                    f"[LATENCY_BENCHMARK] Initial greeting resolved in {greet_gen_dur:.2f}ms | persona='{p_name}' | text='{greeting_text}'"
+                has_custom_script = bool(
+                    cpc and (
+                        getattr(cpc, "call_prompt", None) or
+                        (isinstance(cpc, dict) and cpc.get("call_prompt")) or
+                        isinstance(cpc, str)
+                    )
                 )
 
-                # Ensure conversation context records the assistant's greeting so LLM has complete turn history
-                if hasattr(self.task, "_llm_context"):
-                    self.task._llm_context.add_message({
-                        "role": "assistant",
+                if has_custom_script:
+                    from pipecat.frames.frames import LLMRunFrame
+                    c_ctx = getattr(self, "company_context", None) or {}
+                    c_name = c_ctx.get("company_name") or ""
+                    contact = c_ctx.get("contact_name") or ""
+                    target_info = f" ({contact} at {c_name})" if contact and c_name else (f" ({contact})" if contact else (f" ({c_name})" if c_name else ""))
+                    logger.bind(session_id=self.session_id).info(f"Queueing dynamic custom call script opening greeting for call{target_info}")
+                    greeting_prompt = (
+                        f"The phone call has just connected to the recipient{target_info}. "
+                        "Deliver your opening greeting now, strictly following the call script, persona, and greeting instructions specified in your system instructions. "
+                    )
+                    if not include_brand_intro:
+                        greeting_prompt += "Do not mention or volunteer Flowiz or Cybernauts in your opening greeting or self-introduction. "
+                    greeting_prompt += "Make it a natural, polite, and concise opening turn (1-2 sentences). Do not read the entire script at once."
+
+                    messages = [{
+                        "role": "user",
+                        "content": greeting_prompt,
+                        "source": "INTERNAL_GREETING",
+                        "is_internal_instruction": True,
+                    }]
+                    if hasattr(self.task, "_llm_context"):
+                        for m in messages:
+                            self.task._llm_context.add_message(m)
+                    frames_to_queue = [
+                        LLMRunFrame()
+                    ]
+                elif getattr(self, "company_context", None):
+                    from pipecat.frames.frames import LLMRunFrame
+                    c_ctx = self.company_context
+                    c_name = c_ctx.get("company_name") or "there"
+                    contact = c_ctx.get("contact_name") or ""
+                    greet_target = f"{contact} at {c_name}" if contact else c_name
+                    logger.bind(session_id=self.session_id).info(f"Queueing dynamic outbound qualification greeting prompt for {greet_target}")
+                    if include_brand_intro:
+                        greeting_text = f"The outbound call has connected to {greet_target}. Greet them professionally and warmly as Sara from Flowiz and Cybernauts. Mention that you're reaching out regarding {c_name} and ask if they have a brief moment to speak about automating their operations."
+                    else:
+                        greeting_text = f"The outbound call has connected to {greet_target}. Greet them professionally and warmly as Sara. Do not mention or volunteer Flowiz or Cybernauts in your opening greeting. Mention that you're reaching out regarding {c_name} and ask if they have a brief moment to speak about automating their operations."
+
+                    messages = [{
+                        "role": "user", 
                         "content": greeting_text,
                         "source": "INTERNAL_GREETING",
-                    })
-
-                frames_to_queue = [
-                    TTSSpeakFrame(text=greeting_text, append_to_context=False)
-                ]
-
+                        "is_internal_instruction": True,
+                    }]
+                    if hasattr(self.task, "_llm_context"):
+                        for m in messages:
+                            self.task._llm_context.add_message(m)
+                    frames_to_queue = [
+                        LLMRunFrame()
+                    ]
+                elif getattr(self, "previous_summary", ""):
+                    from pipecat.frames.frames import LLMRunFrame
+                    logger.bind(session_id=self.session_id).info("Queueing dynamic returning customer greeting prompt")
+                    ret_text = "The user has just connected to the call. Please greet the returning customer naturally, referencing the previous conversation summary to personalize the greeting. Ask how you can assist them today. Do not use a fixed template, just be welcoming and concise."
+                    if not include_brand_intro:
+                        ret_text += " Do not mention or volunteer Flowiz or Cybernauts in your greeting."
+                    messages = [{
+                        "role": "user", 
+                        "content": ret_text,
+                        "source": "INTERNAL_GREETING",
+                        "is_internal_instruction": True,
+                    }]
+                    # In Pipecat 1.5.0, BaseOpenAILLMService ignores LLMMessagesAppendFrame.
+                    # We must modify the shared context directly and push LLMRunFrame downstream.
+                    if hasattr(self.task, "_llm_context"):
+                        for m in messages:
+                            self.task._llm_context.add_message(m)
+                    frames_to_queue = [
+                        LLMRunFrame()
+                    ]
+                else:
+                    greetings_wav_path = os.path.join(project_root, "greetings.wav")
+                    if include_brand_intro and os.path.exists(greetings_wav_path):
+                        logger.bind(session_id=self.session_id).info("greetings.wav will be played downstream via GreetingPlayerProcessor.")
+                        # Append the greeting text to context so the LLM knows it was spoken
+                        if hasattr(self.task, "_llm_context"):
+                            self.task._llm_context.add_message({
+                                "role": "assistant", 
+                                "content": "Hello, this is Sara from Flowiz. How can I help you?"
+                            })
+                        frames_to_queue = None
+                    elif include_brand_intro:
+                        logger.bind(session_id=self.session_id).warning("greetings.wav not found. Synthesizing greeting dynamically.")
+                        frames_to_queue = [
+                            TTSSpeakFrame(text="Hello, this is Sara from Flowiz. How can I help you?", append_to_context=True),
+                            BotStoppedSpeakingFrame()
+                        ]
+                    else:
+                        logger.bind(session_id=self.session_id).info("Brand introduction disabled. Synthesizing greeting without brand dynamically.")
+                        frames_to_queue = [
+                            TTSSpeakFrame(text="Hello, this is Sara. How can I help you?", append_to_context=True),
+                            BotStoppedSpeakingFrame()
+                        ]
+                
                 if frames_to_queue:
                     await self.task.queue_frames(frames_to_queue)
                     logger.bind(session_id=self.session_id).info(

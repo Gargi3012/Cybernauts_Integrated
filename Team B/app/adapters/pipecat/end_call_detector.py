@@ -165,15 +165,25 @@ class SemanticEndCallDetector(FrameProcessor):
                     f"[EOC] CALL_END_INTENT_DETECTED | text='{text}' "
                     f"| matched='{matched}' | confidence={confidence}"
                 )
+                qm = self.shared_state.get("qualification_machine")
+                if qm:
+                    from app.services.lead_qualification_machine import QualificationState
+                    if qm.state == QualificationState.QUALIFIED and qm.save_status in ("NOT_STARTED", "FAILED"):
+                        logger.warning(
+                            f"[EOC] Caller ending call while qualified lead pending! Deterministically saving lead first."
+                        )
+                        import asyncio
+                        asyncio.create_task(qm.execute_save())
+
                 # Mark ending — the LLM will still generate its final goodbye
                 # because the TranscriptionFrame passes through normally.
                 # The TurnGuardFilter blocks any *subsequent* turns.
                 self.shared_state["ending_call"] = True
-                self.shared_state["ending_call_turn_id"] = self.shared_state.get("current_turn_id", 0)
+                self.shared_state["ending_call_turn_id"] = self.shared_state.get("current_turn_id", 0) + 1
                 self.shared_state["hangup_requested"] = True
                 self._consecutive_ambiguous = 0
                 logger.warning(
-                    f"[EOC] CALL_END_CONFIRMATION | ending_call=True | "
+                    f"[EOC] CALL_END_CONFIRMATION | ending_call=True | ending_call_turn_id={self.shared_state['ending_call_turn_id']} | "
                     f"hangup_requested=True | trigger='{matched}'"
                 )
                 

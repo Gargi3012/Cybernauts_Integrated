@@ -45,6 +45,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
     """
 
     def __init__(self, session_id: str = None, shared_state: dict = None, event_bus=None, **kwargs):
+        kwargs.setdefault("enable_direct_mode", True)
         super().__init__(**kwargs)
         self.session_id = session_id or "unknown"
         self.shared_state = shared_state if shared_state is not None else {}
@@ -107,9 +108,19 @@ class DynamicLLMFillerProcessor(FrameProcessor):
         filler_frame = TextFrame(text=ack_text)
         filler_frame.is_filler = True
         filler_frame._turn_id = turn_id
+        if self.shared_state.get("active_generation_id") is not None:
+            filler_frame._generation_id = self.shared_state["active_generation_id"]
 
         logger.info(f"[FILLER] FILLER_TTS_STARTED | {self._get_correlation()}")
         await self.push_frame(filler_frame, direction)
+
+    def _create_text_frame(self, text: str, source_frame: Frame = None) -> TextFrame:
+        tf = TextFrame(text=text)
+        tf._turn_id = getattr(source_frame, "_turn_id", self._current_turn_id)
+        gen = getattr(source_frame, "_generation_id", None) or self.shared_state.get("active_generation_id")
+        if gen is not None:
+            tf._generation_id = gen
+        return tf
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -190,6 +201,8 @@ class DynamicLLMFillerProcessor(FrameProcessor):
             if self._mode == "streaming":
                 if not hasattr(frame, "_turn_id"):
                     frame._turn_id = self._current_turn_id
+                if not hasattr(frame, "_generation_id") and self.shared_state.get("active_generation_id") is not None:
+                    frame._generation_id = self.shared_state["active_generation_id"]
                 await self.push_frame(frame, direction)
                 return
 
@@ -214,8 +227,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                         self._mode = "streaming"
                         to_send = self._buffer
                         self._buffer = ""
-                        out_frame = TextFrame(text=to_send)
-                        out_frame._turn_id = self._current_turn_id
+                        out_frame = self._create_text_frame(to_send, frame)
                         await self.push_frame(out_frame, direction)
                         return
 
@@ -240,8 +252,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                                 self._buffer = ""
                                 return
                             elif resp and resp.strip():
-                                out_frame = TextFrame(text=resp.strip())
-                                out_frame._turn_id = self._current_turn_id
+                                out_frame = self._create_text_frame(resp.strip(), frame)
                                 await self.push_frame(out_frame, direction)
 
                             if call_end:
@@ -262,8 +273,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                         self._mode = "streaming"
                         to_send = self._buffer
                         self._buffer = ""
-                        out_frame = TextFrame(text=to_send)
-                        out_frame._turn_id = self._current_turn_id
+                        out_frame = self._create_text_frame(to_send, frame)
                         await self.push_frame(out_frame, direction)
                         return
 
@@ -272,8 +282,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                     self._mode = "streaming"
                     to_send = self._buffer
                     self._buffer = ""
-                    out_frame = TextFrame(text=to_send)
-                    out_frame._turn_id = self._current_turn_id
+                    out_frame = self._create_text_frame(to_send, frame)
                     await self.push_frame(out_frame, direction)
                     return
 
@@ -300,16 +309,14 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                         # Enter streaming mode immediately for remaining response
                         self._mode = "streaming"
                         if self._buffer:
-                            out_frame = TextFrame(text=self._buffer)
-                            out_frame._turn_id = self._current_turn_id
+                            out_frame = self._create_text_frame(self._buffer, frame)
                             await self.push_frame(out_frame, direction)
                             self._buffer = ""
                         return
                 elif len(self._buffer) > 100:
                     # Tag malformed safety fallback: flush and stream
                     self._mode = "streaming"
-                    out_frame = TextFrame(text=self._buffer)
-                    out_frame._turn_id = self._current_turn_id
+                    out_frame = self._create_text_frame(self._buffer, frame)
                     await self.push_frame(out_frame, direction)
                     self._buffer = ""
                     return
@@ -347,8 +354,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                         resp = data.get("response", "")
                         should_wait = bool(data.get("should_wait", False))
                         if not should_wait and resp and resp.strip():
-                            out_frame = TextFrame(text=resp.strip())
-                            out_frame._turn_id = self._current_turn_id
+                            out_frame = self._create_text_frame(resp.strip(), frame)
                             await self.push_frame(out_frame, direction)
                         self._buffer = ""
                         self._mode = "streaming"
@@ -359,8 +365,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                 # Safety: If buffer grows beyond 150 chars without matching JSON schema, release to streaming
                 if len(self._buffer) > 150 and not any(k in self._buffer for k in ["acknowledgement", "response"]):
                     self._mode = "streaming"
-                    out_frame = TextFrame(text=self._buffer)
-                    out_frame._turn_id = self._current_turn_id
+                    out_frame = self._create_text_frame(self._buffer, frame)
                     await self.push_frame(out_frame, direction)
                     self._buffer = ""
                 return
@@ -392,8 +397,7 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                         self.shared_state["user_pause"] = True
                         logger.info(f"[FILLER] USER_PAUSE confirmed | {self._get_correlation()}")
                     elif resp and resp.strip():
-                        out_frame = TextFrame(text=resp.strip())
-                        out_frame._turn_id = self._current_turn_id
+                        out_frame = self._create_text_frame(resp.strip(), frame)
                         await self.push_frame(out_frame, direction)
 
                     if call_end:
@@ -407,20 +411,17 @@ class DynamicLLMFillerProcessor(FrameProcessor):
                     if not should_wait and resp_m:
                         clean_resp = resp_m.group(1).replace('\\"', '"').replace('\\n', ' ')
                         if clean_resp.strip():
-                            out_frame = TextFrame(text=clean_resp.strip())
-                            out_frame._turn_id = self._current_turn_id
+                            out_frame = self._create_text_frame(clean_resp.strip(), frame)
                             await self.push_frame(out_frame, direction)
 
             elif self._mode == "tag" and self._buffer.strip():
                 clean_tail = re.sub(r'<ack.*?>.*?</ack>', '', self._buffer, flags=re.DOTALL).strip()
                 if clean_tail and not self.shared_state.get("user_pause"):
-                    out_frame = TextFrame(text=clean_tail)
-                    out_frame._turn_id = self._current_turn_id
+                    out_frame = self._create_text_frame(clean_tail, frame)
                     await self.push_frame(out_frame, direction)
 
             elif self._buffer.strip() and not self.shared_state.get("user_pause") and self._mode != "waiting":
-                out_frame = TextFrame(text=self._buffer)
-                out_frame._turn_id = self._current_turn_id
+                out_frame = self._create_text_frame(self._buffer, frame)
                 await self.push_frame(out_frame, direction)
 
             self._buffer = ""

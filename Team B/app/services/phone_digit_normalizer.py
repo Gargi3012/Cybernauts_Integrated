@@ -111,7 +111,7 @@ NOISE_WORDS: Set[str] = {
     "number", "mobile", "phone", "likho", "note", "karo", "hai", "hain", "theek",
     "okay", "ok", "please", "sir", "madam", "kripya", "bolo", "boliye", "batao",
     "batata", "hoon", "dijiye", "yeh", "raha", "contact", "call", "me", "on", "at",
-    "and", "aur", "toh", "ka", "ki", "ke"
+    "and", "aur", "toh", "ka", "ki", "ke", "right"
 }
 
 # Explicit final number declaration phrases
@@ -407,6 +407,11 @@ class PhoneDigitNormalizer:
                 i += 1
                 continue
 
+            # Conversational 'right now' / 'just now' (not digit 9)
+            if tok_lower == "now" and i > 0 and tokens[i - 1].lower() in ("right", "just"):
+                i += 1
+                continue
+
             # 4. Devanagari numerals
             dev_digits = [DEVANAGARI_NUMERALS[c] for c in raw_tok if c in DEVANAGARI_NUMERALS]
             if dev_digits and len(dev_digits) == len(raw_tok):
@@ -667,7 +672,18 @@ class PhoneCaptureBuffer:
             self._last_action = "duplicate_ignored"
             return self._status
 
-        # 3. Correction detection
+        # 3. Direct 10-digit complete number override (e.g. caller restates full corrected number)
+        m10 = re.search(r'\b([6-9]\d{9})\b', clean_text)
+        if m10:
+            self._digits = m10.group(1)
+            self._ambiguous_tokens.clear()
+            self._update_status()
+            self._last_raw_transcript = clean_text
+            self._last_action = "complete_10_digit_override"
+            logger.info(f"[PHONE_BUFFER] Direct 10-digit number detected and applied: {mask_phone_number(self._digits)} | session={self.session_id}")
+            return self._status
+
+        # 4. Correction detection
         correction = self.detect_and_apply_correction(clean_text)
         if correction:
             old_d, new_d, _ = correction

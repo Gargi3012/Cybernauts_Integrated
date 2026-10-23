@@ -37,7 +37,7 @@ def _build_vad_analyzer():
 
 
 class PlivoTransportAdapter(PipecatTransportAdapter):
-    """Implementation for Plivo WebSockets."""
+    """Implementation for Plivo WebSockets with atomic interruption and generation tracking."""
 
     def __init__(
         self,
@@ -47,47 +47,32 @@ class PlivoTransportAdapter(PipecatTransportAdapter):
         call_id: Optional[str] = None,
         auth_id: Optional[str] = None,
         auth_token: Optional[str] = None,
-    ):
-        pillar2_plivo = _import_pillar2_module("pillar2_plivo", "plivo_bot.py")
-        actual_stream_id = str(stream_id or stream_sid or "")
-        self.transport = pillar2_plivo.build_plivo_transport(
-            websocket=websocket,
-            stream_id=actual_stream_id,
-            vad_analyzer=_build_vad_analyzer(),
-            call_id=call_id,
-            auth_id=auth_id,
-            auth_token=auth_token,
-        )
-
-    def get_pipecat_transport(self) -> Any:
-        return self.transport
-
-
-class PlivoTransportAdapter(PipecatTransportAdapter):
-    """Implementation for Plivo WebSockets."""
-
-    def __init__(
-        self,
-        websocket: WebSocket,
-        stream_id: str,
-        call_id: str | None = None,
-        auth_id: str | None = None,
-        auth_token: str | None = None,
+        shared_state: Optional[dict] = None,
+        **kwargs: Any,
     ):
         self.websocket = websocket
-        self.stream_id = stream_id
+        self.stream_id = str(stream_id or stream_sid or "")
         self.call_id = call_id
         self.auth_id = auth_id
         self.auth_token = auth_token
+        self.shared_state = shared_state
+
         pillar2_plivo = _import_pillar2_module("pillar2_plivo", "plivo_bot.py")
         self.transport = pillar2_plivo.build_plivo_transport(
             websocket=websocket,
-            stream_id=stream_id,
+            stream_id=self.stream_id,
             call_id=call_id,
             auth_id=auth_id,
             auth_token=auth_token,
             vad_analyzer=_build_vad_analyzer(),
+            shared_state=shared_state,
+            **kwargs,
         )
+
+    def set_shared_state(self, shared_state: dict):
+        self.shared_state = shared_state
+        if hasattr(self.transport, "set_shared_state"):
+            self.transport.set_shared_state(shared_state)
 
     def get_pipecat_transport(self) -> Any:
         return self.transport

@@ -31,44 +31,78 @@ from pipecat.frames.frames import (
     TTSStartedFrame,
     TTSStoppedFrame,
     UserStartedSpeakingFrame,
+    InterruptionFrame,
+    TTSSpeakFrame,
 )
 
 
 class TurnGuardProcessor(FrameProcessor):
     """
-    Injects a turn_id into every LLMContextFrame and discards stale
-    LLM responses (TextFrame / TTSStartedFrame / TTSStoppedFrame chains)
-    that belong to a superseded turn.
+    Injects a turn_id into every LLMContextFrame, manages monotonic response
+    generation IDs, and discards stale LLM responses that belong to a superseded
+    turn or invalidated generation.
 
     Place this processor BEFORE the LLM in the pipeline.
     A companion TurnGuardFilter (same shared state) sits AFTER the LLM.
     """
 
     def __init__(self, shared_state: dict = None, **kwargs):
+        kwargs.setdefault("enable_direct_mode", True)
         super().__init__(**kwargs)
         self.shared_state = shared_state if shared_state is not None else {}
-        # Start at 0 — incremented on every new user context frame
-        self.shared_state.setdefault("current_turn_id", 0)
+        # Start at 1 — incremented on every new user context frame
+        self.shared_state.setdefault("current_turn_id", 1)
+        self.shared_state.setdefault("current_generation_id", 1)
+        self.shared_state.setdefault("active_generation_id", 1)
+        self.shared_state.setdefault("interrupted_generation_id", None)
+        self.shared_state.setdefault("late_chunks_dropped", 0)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, (LLMContextFrame, LLMRunFrame)):
-            # New user turn — bump the counter
+        if isinstance(frame, (LLMContextFrame, LLMRunFrame, TTSSpeakFrame)) or type(frame).__name__ in ("LLMContextFrame", "OpenAILLMContextFrame", "LLMRunFrame", "TTSSpeakFrame"):
+            # New user turn or direct speech — bump turn counter and generation ID
             self.shared_state["current_turn_id"] += 1
             turn_id = self.shared_state["current_turn_id"]
-            # Stamp the frame so downstream filter knows which turn this is
+            
+            self.shared_state["current_generation_id"] = self.shared_state.get("current_generation_id", 0) + 1
+            gen_id = self.shared_state["current_generation_id"]
+            self.shared_state["active_generation_id"] = gen_id
+            self.shared_state["interrupted_generation_id"] = None
+            if self.shared_state.get("ending_call") and self.shared_state.get("ending_call_turn_id") is None:
+                self.shared_state["ending_call_turn_id"] = turn_id
+            
+            # Stamp the frame so downstream filter and audio gate know which turn and generation this is
             frame._turn_id = turn_id  # type: ignore[attr-defined]
+            frame._generation_id = gen_id  # type: ignore[attr-defined]
             logger.info(
-                f"[TURN] New turn_id={turn_id} stamped on {type(frame).__name__}"
+                f"[TURN] New turn_id={turn_id} generation_id={gen_id} stamped on {type(frame).__name__}"
             )
 
         elif isinstance(frame, UserStartedSpeakingFrame):
-            # User started speaking — the current in-flight LLM response (if any)
-            # is now stale once a new transcript arrives.  We don't bump turn_id
-            # here yet because we wait for the TranscriptionFrame / LLMContextFrame,
-            # but we record that new speech is starting.
             logger.debug("[TURN] UserStartedSpeaking — next LLMContextFrame will bump turn_id")
+
+        elif isinstance(frame, InterruptionFrame):
+            # Atomic interruption: invalidate active generation immediately
+            int_gen = getattr(frame, "_generation_id", None)
+            active_gen = self.shared_state.get("active_generation_id")
+            if int_gen is not None and active_gen is not None and int_gen < active_gen:
+                logger.info(
+                    f"[TURN] Late InterruptionFrame for superseded generation {int_gen} ignored (active is {active_gen})"
+                )
+                await self.push_frame(frame, direction)
+                return
+
+            import time
+            cur_gen = self.shared_state.get("current_generation_id", 0)
+            self.shared_state["active_generation_id"] = None
+            self.shared_state["interrupted_generation_id"] = cur_gen
+            self.shared_state["tts_speaking"] = False
+            self.shared_state["last_interruption_ts"] = time.monotonic()
+            logger.info(
+                f"[INTERRUPTION] Active generation invalidated in TurnGuardProcessor | "
+                f"interrupted_gen={cur_gen} | turn_id={self.shared_state.get('current_turn_id', 0)}"
+            )
 
         await self.push_frame(frame, direction)
 
@@ -76,22 +110,24 @@ class TurnGuardProcessor(FrameProcessor):
 class TurnGuardFilter(FrameProcessor):
     """
     Sits AFTER the LLM (between LLM and TTS).  Suppresses TextFrames and
-    TTS frames that belong to a stale turn_id.
+    TTS frames that belong to a stale turn_id or an invalidated generation_id.
 
     When a LLMFullResponseStartFrame arrives:
-      - Read its _turn_id attribute (stamped by TurnGuardProcessor).
-      - Compare against shared_state["current_turn_id"].
-      - If older → mark _suppressing = True and discard until LLMFullResponseEndFrame.
+      - Read its _turn_id and _generation_id attributes.
+      - Compare against shared_state["current_turn_id"] and shared_state["active_generation_id"].
+      - If older or invalidated → mark _suppressing = True and discard until LLMFullResponseEndFrame.
       - If current → pass through normally.
 
-    This prevents old queued audio from playing after new user speech.
+    This prevents old queued audio and stale LLM text from playing after user barge-in.
     """
 
     def __init__(self, shared_state: dict = None, **kwargs):
+        kwargs.setdefault("enable_direct_mode", True)
         super().__init__(**kwargs)
         self.shared_state = shared_state if shared_state is not None else {}
         self._suppressing = False
         self._suppressed_turn_id = None
+        self._suppressed_generation_id = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -101,8 +137,12 @@ class TurnGuardFilter(FrameProcessor):
             ending_turn_id = self.shared_state.get("ending_call_turn_id")
             current_turn_id = self.shared_state.get("current_turn_id", 0)
             
-            # If ending_call was just set in this turn, allow it to generate the final goodbye
-            if ending_turn_id is None or current_turn_id > ending_turn_id:
+            # If ending_call was just set without a recorded turn_id, allow this turn to generate the final goodbye
+            if ending_turn_id is None:
+                self.shared_state["ending_call_turn_id"] = current_turn_id
+                ending_turn_id = current_turn_id
+
+            if current_turn_id > ending_turn_id:
                 if isinstance(frame, (LLMFullResponseStartFrame, TextFrame,
                                       TTSStartedFrame, TTSStoppedFrame,
                                       LLMFullResponseEndFrame)):
@@ -116,16 +156,56 @@ class TurnGuardFilter(FrameProcessor):
             await self.push_frame(frame, direction)
             return
 
+        # InterruptionFrame arriving downstream: immediately suppress current generation
+        if isinstance(frame, InterruptionFrame):
+            int_gen = getattr(frame, "_generation_id", None)
+            active_gen = self.shared_state.get("active_generation_id")
+            if int_gen is not None and active_gen is not None and int_gen < active_gen:
+                logger.info(
+                    f"[TURN] Late InterruptionFrame for superseded generation {int_gen} ignored (active is {active_gen})"
+                )
+                await self.push_frame(frame, direction)
+                return
+
+            import time
+            cur_gen = self.shared_state.get("current_generation_id", 0)
+            self.shared_state["active_generation_id"] = None
+            self.shared_state["interrupted_generation_id"] = cur_gen
+            self.shared_state["tts_speaking"] = False
+            self.shared_state["last_interruption_ts"] = time.monotonic()
+            self._suppressing = True
+            self._suppressed_turn_id = self.shared_state.get("current_turn_id", 0)
+            self._suppressed_generation_id = cur_gen
+            logger.info(
+                f"[INTERRUPTION] TurnGuardFilter suppressing current generation | "
+                f"interrupted_gen={cur_gen} | turn_id={self._suppressed_turn_id}"
+            )
+            await self.push_frame(frame, direction)
+            return
+
         if isinstance(frame, LLMFullResponseStartFrame):
             frame_turn_id = getattr(frame, "_turn_id", None)
+            frame_gen_id = getattr(frame, "_generation_id", None)
             current_turn_id = self.shared_state.get("current_turn_id", 0)
+            active_gen_id = self.shared_state.get("active_generation_id", None)
 
-            if frame_turn_id is not None and frame_turn_id < current_turn_id:
+            # If generation was invalidated, or frame is older than current turn/generation
+            is_stale_turn = frame_turn_id is not None and frame_turn_id < current_turn_id
+            is_stale_gen = False
+            interrupted_gen_id = self.shared_state.get("interrupted_generation_id")
+            if frame_gen_id is not None and active_gen_id is not None and frame_gen_id != active_gen_id:
+                is_stale_gen = True
+            elif active_gen_id is None and interrupted_gen_id is not None:
+                if frame_gen_id is None or frame_gen_id == interrupted_gen_id:
+                    is_stale_gen = True
+
+            if is_stale_turn or is_stale_gen:
                 self._suppressing = True
-                self._suppressed_turn_id = frame_turn_id
+                self._suppressed_turn_id = frame_turn_id or current_turn_id
+                self._suppressed_generation_id = frame_gen_id
                 logger.warning(
-                    f"[TURN] STALE response turn_id={frame_turn_id} < "
-                    f"current_turn_id={current_turn_id} — suppressing"
+                    f"[TURN] STALE response turn_id={frame_turn_id} (curr={current_turn_id}) | "
+                    f"gen_id={frame_gen_id} (active={active_gen_id}) — suppressing"
                 )
                 self.shared_state["stale_responses_discarded"] = (
                     self.shared_state.get("stale_responses_discarded", 0) + 1
@@ -134,19 +214,25 @@ class TurnGuardFilter(FrameProcessor):
             else:
                 self._suppressing = False
                 self._suppressed_turn_id = None
+                self._suppressed_generation_id = None
+                if getattr(frame, "_generation_id", None) is None and active_gen_id is not None:
+                    frame._generation_id = active_gen_id
+                if getattr(frame, "_turn_id", None) is None and current_turn_id is not None:
+                    frame._turn_id = current_turn_id
                 logger.debug(
-                    f"[TURN] Valid response turn_id={frame_turn_id} passing through"
+                    f"[TURN] Valid response turn_id={frame_turn_id} gen_id={active_gen_id} passing through"
                 )
 
         elif isinstance(frame, LLMFullResponseEndFrame) and self._suppressing:
             logger.warning(
-                f"[TURN] STALE_RESPONSE_DISCARDED | turn_id={self._suppressed_turn_id}"
+                f"[TURN] STALE_RESPONSE_DISCARDED | turn_id={self._suppressed_turn_id} | gen_id={self._suppressed_generation_id}"
             )
             logger.warning(
-                f"[FILLER] FILLER_DISCARDED_AS_STALE | turn_id={self._suppressed_turn_id}"
+                f"[FILLER] FILLER_DISCARDED_AS_STALE | turn_id={self._suppressed_turn_id} | gen_id={self._suppressed_generation_id}"
             )
             self._suppressing = False
             self._suppressed_turn_id = None
+            self._suppressed_generation_id = None
             await self.push_frame(frame, direction)  # End frame must pass so aggregator doesn't stall
             return
 
@@ -158,10 +244,25 @@ class TurnGuardFilter(FrameProcessor):
             # Drop stale audio/text frames
             return
 
+        # Drop text frames if active_generation_id was invalidated mid-sentence by interruption
+        elif isinstance(frame, TextFrame) and self.shared_state.get("active_generation_id") is None and self.shared_state.get("interrupted_generation_id") is not None:
+            interrupted_gen = self.shared_state.get("interrupted_generation_id")
+            frame_gen = getattr(frame, "_generation_id", None)
+            if frame_gen is None or frame_gen == interrupted_gen:
+                return
+
         if isinstance(frame, TTSStartedFrame):
             self.shared_state["tts_speaking"] = True
         elif isinstance(frame, TTSStoppedFrame):
             self.shared_state["tts_speaking"] = False
+
+        # Stamp valid frames with active_generation_id and current_turn_id
+        active_gen_id = self.shared_state.get("active_generation_id")
+        if active_gen_id is not None and getattr(frame, "_generation_id", None) is None:
+            frame._generation_id = active_gen_id
+        current_turn_id = self.shared_state.get("current_turn_id")
+        if current_turn_id is not None and getattr(frame, "_turn_id", None) is None:
+            frame._turn_id = current_turn_id
 
         await self.push_frame(frame, direction)
 
@@ -279,6 +380,11 @@ class ValidatedUserTurnStartStrategy(BaseUserTurnStartStrategy):
                     f"turn_id={turn_id} | reason={'interim_transcript' if isinstance(frame, InterimTranscriptionFrame) else 'final_transcript'} | text='{clean_text}'"
                 )
                 self._triggered = True
+                cur_gen = self.shared_state.get("current_generation_id", 0)
+                self.shared_state["active_generation_id"] = None
+                self.shared_state["interrupted_generation_id"] = cur_gen
+                self.shared_state["tts_speaking"] = False
+                self.shared_state["last_interruption_ts"] = now
                 await self.trigger_user_turn_started()
                 return ProcessFrameResult.STOP if ProcessFrameResult else None
 
@@ -303,6 +409,11 @@ class ValidatedUserTurnStartStrategy(BaseUserTurnStartStrategy):
                     f"turn_id={turn_id} | reason=sustained_speech | duration={duration:.3f}s"
                 )
                 self._triggered = True
+                cur_gen = self.shared_state.get("current_generation_id", 0)
+                self.shared_state["active_generation_id"] = None
+                self.shared_state["interrupted_generation_id"] = cur_gen
+                self.shared_state["tts_speaking"] = False
+                self.shared_state["last_interruption_ts"] = now
                 await self.trigger_user_turn_started()
                 return ProcessFrameResult.STOP if ProcessFrameResult else None
 
@@ -405,6 +516,7 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
         if not in_phone_capture:
             return self.user_speech_timeout
 
+        import re
         from app.services.phone_digit_normalizer import (
             PhoneDigitNormalizer,
             is_valid_indian_mobile,
@@ -424,6 +536,17 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
 
         if has_final_phrase or (len(total_digits) == 10 and is_valid_indian_mobile(total_digits)):
             return self.digit_complete_timeout
+
+        # Prevent stale phone-capture state: if user is speaking conversational text without digits or phone context, use normal timeout
+        if self._text:
+            tokens = PhoneDigitNormalizer.extract_tokens(self._text)
+            has_digit_tokens = any(
+                t.token_type in (TokenType.DIGIT, TokenType.MULTIPLIER, TokenType.TIME_LIKE_AMBIGUOUS)
+                for t in tokens
+            )
+            has_phone_kw = bool(re.search(r'\b(phone|mobile|number|no\.|contact|whatsapp)\b', self._text, re.I))
+            if not has_digit_tokens and not has_phone_kw:
+                return self.user_speech_timeout
 
         if 0 < len(total_digits) < 10:
             return self.digit_speech_timeout
@@ -478,6 +601,7 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
                         PhoneDigitNormalizer,
                         log_deepgram_diagnostic_event,
                         TokenType,
+                        is_valid_indian_mobile,
                     )
 
                     # Deduplication & hypothesis revision
@@ -523,10 +647,13 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
                     phone_confirmed = self.shared_state.get("phone_confirmed", False)
                     in_phone_capture = self.shared_state.get("in_phone_capture", False) and not phone_confirmed
 
-                    # Enter phone capture from user speech ONLY if user explicitly provides phone context with digits
+                    # Enter phone capture if user explicitly provides phone context with digits,
+                    # OR if the utterance contains a valid 10-digit Indian mobile number
                     if not in_phone_capture and has_digit_tokens:
                         has_phone_kw = bool(re.search(r'\b(phone|mobile|number|no\.|contact|whatsapp)\b', clean_text, re.I))
-                        if has_phone_kw:
+                        cands = PhoneDigitNormalizer.extract_turn_candidates(clean_text)
+                        has_valid_mobile = any(is_valid_indian_mobile(c) for c in cands if len(c) == 10)
+                        if has_phone_kw or has_valid_mobile:
                             in_phone_capture = True
                             self.shared_state["in_phone_capture"] = True
 
@@ -643,9 +770,11 @@ class OptimizedUserTurnStopStrategy(BaseUserTurnStopStrategy):
             self._timeout_task = None
         turn_id = self.shared_state.get("current_turn_id", 0)
         active_timeout = self._get_active_speech_timeout()
+        self.shared_state["last_active_timeout"] = active_timeout
+        self.shared_state["last_turn_is_phone"] = (active_timeout == self.digit_speech_timeout or active_timeout == self.digit_complete_timeout)
         logger.info(
             f"[END_OF_TURN] User turn finalized | turn_id={turn_id} | "
-            f"text='{self._text.strip()}' | speech_timeout={active_timeout}s"
+            f"text='{self._text.strip()}' | speech_timeout={active_timeout}s | is_phone={self.shared_state['last_turn_is_phone']}"
         )
         await self.trigger_user_turn_stopped()
 

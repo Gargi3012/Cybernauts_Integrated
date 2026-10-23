@@ -17,7 +17,8 @@ from typing import AsyncGenerator, Optional, AsyncIterator
 import aiohttp
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame, ErrorFrame, AggregationType
+from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSStartedFrame, TTSStoppedFrame, ErrorFrame, AggregationType, InterruptionFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 from pipecat.utils.text.base_text_aggregator import BaseTextAggregator
 from pipecat.utils.text.simple_text_aggregator import Aggregation
@@ -469,6 +470,15 @@ class SarvamTTSService(TTSService):
         self.url = "https://api.sarvam.ai/text-to-speech"
         self._session: Optional[aiohttp.ClientSession] = None
         self._text_aggregator = LowLatencyClauseAggregator()
+        self._active_clause_tasks: set[asyncio.Task] = set()
+
+    async def _handle_interruption(self, frame: InterruptionFrame, direction: FrameDirection):
+        for task in list(self._active_clause_tasks):
+            if not task.done():
+                task.cancel()
+        self._active_clause_tasks.clear()
+        if getattr(self, "_task_manager", None):
+            await super()._handle_interruption(frame, direction)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -490,6 +500,10 @@ class SarvamTTSService(TTSService):
         return self._session
 
     async def stop(self, *args, **kwargs):
+        for task in list(self._active_clause_tasks):
+            if not task.done():
+                task.cancel()
+        self._active_clause_tasks.clear()
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
@@ -584,98 +598,81 @@ class SarvamTTSService(TTSService):
                     logger.debug(f"[VOICE_ENGINE] Cache resample notice: {resample_err}")
                     delivery_pcm = cached_pcm
 
-            logger.info(f"[VOICE_ENGINE] Audio cache HIT ({len(delivery_pcm)} bytes) | voice='{self.voice}' | rate={req_sample_rate}Hz | text='{clean_text[:40]}...'")
-            yield TTSStartedFrame()
-            chunk_size = 1280
-            for i in range(0, len(delivery_pcm), chunk_size):
-                chunk = delivery_pcm[i : i + chunk_size]
-                yield TTSAudioRawFrame(
-                    audio=chunk,
-                    sample_rate=req_sample_rate,
-                    num_channels=cached_channels,
-                )
-            yield TTSStoppedFrame()
-            return
-
-        # Dynamic synthesis path (conversation turns)
+        fetch_tasks = []
         try:
             yield TTSStartedFrame()
+            
+            session = await self._get_session()
+            headers = {
+                "api-subscription-key": self.api_key,
+                "Content-Type": "application/json",
+            }
+            req_sample_rate = self.sample_rate if self.sample_rate in (8000, 16000, 22050) else 16000
+
+            # Helper async function to fetch audio for a single clause
+            async def fetch_clause_audio(clause_text: str):
+                logger.info(f"SarvamTTSService: generating clause audio | voice='{self.voice}' | clause='{clause_text[:40]}...'")
+                payload = {
+                    "inputs": [clause_text],
+                    "target_language_code": self.target_language_code,
+                    "speaker": self.voice,
+                    "pace": 1.08,
+                    "speech_sample_rate": req_sample_rate,
+                    "enable_preprocessing": False,
+                    "model": self.model,
+                }
+                if "v3" not in self.model.lower():
+                    payload["pitch"] = 0
+                    payload["loudness"] = 1.5
+
+                async with session.post(self.url, headers=headers, json=payload, timeout=15) as resp:
+                    if resp.status != 200:
+                        err_body = await resp.text()
+                        logger.error(f"Sarvam AI TTS API error {resp.status}: {err_body}")
+                        return None
+                    data = await resp.json()
+                    audios = data.get("audios", [])
+                    if not audios:
+                        return None
+                    return base64.b64decode(audios[0])
+
+            # Launch async pre-fetch tasks for all clauses in parallel
+            fetch_tasks = [asyncio.create_task(fetch_clause_audio(c)) for c in clauses]
+            for t in fetch_tasks:
+                self._active_clause_tasks.add(t)
+
+            for task in fetch_tasks:
+                audio_bytes = await task
+                if not audio_bytes:
+                    continue
 
             should_try_sarvam = bool(self.api_key and not _SARVAM_QUOTA_EXHAUSTED)
             emitted = False
 
             if should_try_sarvam:
                 try:
-                    session = await self._get_session()
-                    headers = {
-                        "api-subscription-key": self.api_key,
-                        "Content-Type": "application/json",
-                    }
-                    payload = {
-                        "inputs": [clean_text],
-                        "target_language_code": self.target_language_code,
-                        "speaker": self.voice,
-                        "pace": 1.08,
-                        "speech_sample_rate": req_sample_rate,
-                        "enable_preprocessing": False,
-                        "model": self.model,
-                    }
-                    if "v3" not in self.model.lower():
-                        payload["pitch"] = 0
-                        payload["loudness"] = 1.5
+                    with wave.open(io.BytesIO(audio_bytes), 'rb') as wav_file:
+                        detected_rate = wav_file.getframerate()
+                        num_channels = wav_file.getnchannels()
+                        raw_pcm = wav_file.readframes(wav_file.getnframes())
+                except Exception as wav_err:
+                    logger.debug(f"Parsing WAV header failed (assuming raw PCM): {wav_err}")
 
-                    # Responsive 1.5s timeout on Sarvam to avoid conversational lag
-                    async with session.post(self.url, headers=headers, json=payload, timeout=1.5) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            audios = data.get("audios", [])
-                            if audios:
-                                raw_audio = base64.b64decode(audios[0])
-                                raw_pcm = raw_audio
-                                detected_rate = req_sample_rate
-                                num_channels = 1
-                                try:
-                                    with wave.open(io.BytesIO(raw_audio), 'rb') as wav_file:
-                                        detected_rate = wav_file.getframerate()
-                                        num_channels = wav_file.getnchannels()
-                                        raw_pcm = wav_file.readframes(wav_file.getnframes())
-                                except Exception:
-                                    pass
+                if num_channels == 2:
+                    import audioop
+                    raw_pcm = audioop.tomono(raw_pcm, 2, 0.5, 0.5)
+                    num_channels = 1
 
-                                _TTS_AUDIO_CACHE[cache_key] = (raw_pcm, detected_rate, num_channels)
-                                chunk_size = 1280
-                                for i in range(0, len(raw_pcm), chunk_size):
-                                    chunk = raw_pcm[i : i + chunk_size]
-                                    yield TTSAudioRawFrame(
-                                        audio=chunk,
-                                        sample_rate=detected_rate,
-                                        num_channels=num_channels,
-                                    )
-                                emitted = True
-                        else:
-                            err_body = await resp.text()
-                            if resp.status == 402 or "insufficient_quota" in err_body.lower() or "credits" in err_body.lower():
-                                _SARVAM_QUOTA_EXHAUSTED = True
-                                _SARVAM_LAST_ERROR_TIME = time.time()
-                                logger.warning(
-                                    f"[VOICE_ENGINE] Sarvam quota exhausted (HTTP 402). "
-                                    f"Instantly switching to high-fidelity Neural Indian Voice engine: "
-                                    f"persona='{self.voice}' -> model='{self.edge_voice}'"
-                                )
-                            else:
-                                logger.warning(
-                                    f"[VOICE_ENGINE] Sarvam API returned status {resp.status}. "
-                                    f"Routing to Neural Indian Voice engine."
-                                )
-                            should_try_sarvam = False
+                # Enforce 16-bit PCM alignment (must be multiple of 2 bytes)
+                if len(raw_pcm) % 2 != 0:
+                    raw_pcm = raw_pcm[:-1]
 
-                except Exception as s_err:
-                    logger.warning(f"[VOICE_ENGINE] Sarvam request notice ({s_err}). Routing to Neural Indian Voice engine.")
-                    should_try_sarvam = False
-
-            # If Sarvam was not attempted, failed, or quota exhausted, stream via Edge Neural Voice
-            if not emitted:
-                async for pcm_chunk in self._stream_edge_neural_pcm(clean_text, req_sample_rate):
+                # Stream audio in 4KB PCM chunks
+                chunk_size = 4096
+                for i in range(0, len(raw_pcm), chunk_size):
+                    chunk = raw_pcm[i : i + chunk_size]
+                    if len(chunk) % 2 != 0:
+                        chunk = chunk[:-1]
                     yield TTSAudioRawFrame(
                         audio=pcm_chunk,
                         sample_rate=req_sample_rate,
@@ -684,7 +681,16 @@ class SarvamTTSService(TTSService):
 
             yield TTSStoppedFrame()
 
+        except asyncio.CancelledError:
+            for task in fetch_tasks:
+                if not task.done():
+                    task.cancel()
+            raise
         except Exception as e:
-            logger.error(f"SarvamTTSService execution error: {e}")
-            yield ErrorFrame(error=f"Voice synthesis failed: {e}")
-
+            logger.error(f"SarvamTTSService error: {e}")
+            yield ErrorFrame(error=f"Sarvam TTS generation failed: {e}")
+        finally:
+            for task in fetch_tasks:
+                if not task.done():
+                    task.cancel()
+                self._active_clause_tasks.discard(task)

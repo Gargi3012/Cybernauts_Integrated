@@ -43,7 +43,7 @@ MAX_DIRECT_QUERIES_BUDGET = int(os.getenv("MAX_DIRECT_QUERIES_BUDGET", "10"))
 # Ordered list of providers to try (env: comma-separated string)
 # Free providers first, paid rescue provider (BrightData) last.
 # BrightData only fires after free engines fail, return zero, or hit rate limits.
-_raw_priority   = os.getenv("SEARCH_PROVIDER_PRIORITY", "playwright_google,brave,google_html,duckduckgo,bing,brightdata,linkedin_playwright")
+_raw_priority   = os.getenv("SEARCH_PROVIDER_PRIORITY", "serpapi,playwright_google,brave,google_html,duckduckgo,bing,brightdata,linkedin_playwright")
 SEARCH_PROVIDER_PRIORITY: list[str] = [p.strip() for p in _raw_priority.split(",") if p.strip()]
 
 # Playwright Browser Automation Pool Settings
