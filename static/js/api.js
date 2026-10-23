@@ -91,6 +91,13 @@ const api = {
     return fetchJSON("/api/leads/all");
   },
 
+  async createLead(leadData) {
+    return fetchJSON("/api/leads", {
+      method: "POST",
+      body: leadData
+    });
+  },
+
   async getCategories() {
     return fetchJSON("/api/categories");
   },
@@ -122,7 +129,7 @@ const api = {
     });
   },
 
-  async joinLiveKit() {
+  async joinLiveKit(extra = {}) {
     let token = localStorage.getItem("jwt_token");
     if (!token) {
       try {
@@ -132,7 +139,19 @@ const api = {
         console.warn("Auto-login notice for LiveKit:", e);
       }
     }
-    return fetchJSON("/api/livekit/join", { method: "POST" });
+    return fetchJSON("/api/livekit/join", { 
+      method: "POST",
+      body: extra 
+    });
+  },
+
+  async getPersonas() {
+    try {
+      return await fetchJSON("/api/personas");
+    } catch (e) {
+      console.warn("Notice: could not fetch remote personas:", e);
+      return null;
+    }
   },
 
   async triggerOutboundCall(phoneNumber, extra = {}) {
@@ -179,6 +198,29 @@ const api = {
 
   async getCallHistory() {
     return fetchJSON("/api/call-history");
+  },
+
+  async getRecordings(params = {}) {
+    const query = new URLSearchParams(params).toString();
+    return fetchJSON(`/api/recordings${query ? '?' + query : ''}`);
+  },
+
+  async deleteRecording(recordingId) {
+    return fetchJSON(`/api/recordings/${recordingId}`, {
+      method: "DELETE"
+    });
+  },
+
+  async uploadRecording(formData) {
+    const response = await fetch("/api/recordings/upload", {
+      method: "POST",
+      body: formData
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to upload call recording");
+    }
+    return response.json();
   },
 
   async getHealth() {

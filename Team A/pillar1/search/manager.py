@@ -287,14 +287,6 @@ class SearchManager:
         else:
             self._priority = [p.strip() for p in raw_priority.split(",") if p.strip()]
 
-        if (
-            len(self._priority) >= 2
-            and self._priority[:2] == ["playwright_google", "google_html"]
-            and os.getenv("FORCE_LEGACY_GOOGLE_FIRST", "false").lower() != "true"
-        ):
-            self._priority = list(DEFAULT_PRIORITY)
-
-        # ── Provider mode ─────────────────────────────────────────────────
         self._mode: str = getattr(config, "SEARCH_PROVIDER", "auto").strip().lower()
 
         # ── Lazy provider instance cache ──────────────────────────────────
@@ -319,10 +311,11 @@ class SearchManager:
         }
         self._provider_failure_scores: dict[str, float] = defaultdict(float)
 
-        # ── Per-provider statistics ───────────────────────────────────────
         self.stats: dict[str, ProviderStats] = {
             name: ProviderStats(provider=name) for name in PROVIDER_REGISTRY
         }
+        if "serpapi" not in self.stats:
+            self.stats["serpapi"] = ProviderStats(provider="serpapi")
         self._consecutive_zero_results: dict[str, int] = defaultdict(int)
         
         # ── Keyword-level state (Budget & Yield) ──────────────────────────
@@ -351,8 +344,9 @@ class SearchManager:
         self.total_duplicates_removed: int = 0
         self.total_merged:             int = 0
 
-        # SerpApi metrics
-        self.serpapi_available: bool = False
+        serp_cls = ProviderRegistry.get_provider_class("serpapi")
+        serp_key = (os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")).strip()
+        self.serpapi_available: bool = bool(serp_cls and serp_key and getattr(config, "ENABLE_SERPAPI", True))
         self.serpapi_attempted: int = 0
         self.serpapi_success: int = 0
         self.serpapi_failed: int = 0
@@ -470,23 +464,16 @@ class SearchManager:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def providers_available(self) -> bool:
-        """
-        Check if any active provider is available (not in cooldown).
-        Used by the pipeline to pause discovery instead of hammering dead proxies.
-        """
-        if bool(os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")) and getattr(config, "ENABLE_SERPAPI", True):
+        if bool((os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")).strip()) and getattr(config, "ENABLE_SERPAPI", True):
             return True
-        self._recover_cooled_providers() # Ensure cooldowns are current
+        self._recover_cooled_providers()
         for name in self._priority:
             if self.provider_health.get(name, False) and name not in self._provider_cooldowns:
                 return True
         return False
 
     def providers_available_for_keyword(self, family: str = "unknown") -> bool:
-        """
-        Check if any active provider is available and not exhausted for this keyword and family.
-        """
-        if bool(os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")) and getattr(config, "ENABLE_SERPAPI", True):
+        if bool((os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")).strip()) and getattr(config, "ENABLE_SERPAPI", True):
             return True
         self._recover_cooled_providers()
         for pname in self._priority:
@@ -624,12 +611,8 @@ class SearchManager:
 
         normal_providers = [p for p in ordered if p.name != "serpapi"]
 
-        # ── Primary SerpApi Routing ─────────────────────────────────────────
-        # When SERPAPI_KEY is available and configured, try SerpApi FIRST.
-        # If it returns usable results, accept them.
-        # If it fails, errors, times out, or returns 0 results, fall through to normal providers.
         serpapi_cls = ProviderRegistry.get_provider_class("serpapi")
-        has_serpapi_key = bool(os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", ""))
+        has_serpapi_key = bool((os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")).strip())
         serpapi_enabled = getattr(config, "ENABLE_SERPAPI", True)
         self.serpapi_available = bool(serpapi_cls and has_serpapi_key and serpapi_enabled)
 
@@ -1070,8 +1053,6 @@ class SearchManager:
             if len(all_results) >= max_results:
                 break
 
-        # ── Final SerpApi Rescue Fallback ─────────────────────────────────
-        # Trigger ONLY when normal providers returned no usable results (empty or unusable result set)
         if not all_results:
             self._run_serpapi_rescue(
                 query=query,
@@ -1119,11 +1100,7 @@ class SearchManager:
         providers_used: list[str] | None = None,
         provider_report: list[dict] | None = None,
     ) -> bool:
-        """
-        Primary search using SerpApi when SERPAPI_KEY is available.
-        Returns True if SerpApi succeeded and produced usable results.
-        Returns False if SerpApi failed, timed out, or produced 0 usable results (allowing fallback to normal providers).
-        """
+
         if all_results is None:
             all_results = []
         if seen_canonical is None:
@@ -1134,7 +1111,7 @@ class SearchManager:
             provider_report = []
 
         serpapi_cls = ProviderRegistry.get_provider_class("serpapi")
-        has_serpapi_key = bool(os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", ""))
+        has_serpapi_key = bool((os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")).strip())
         serpapi_enabled = getattr(config, "ENABLE_SERPAPI", True)
         is_available = bool(serpapi_cls and has_serpapi_key and serpapi_enabled)
 
@@ -1234,7 +1211,6 @@ class SearchManager:
             print(f"[SERPAPI] FAIL: {exc} - activating FALLBACK_MODE")
             if hasattr(config, "activate_fallback_mode"):
                 config.activate_fallback_mode(f"SerpApi failure: {exc}")
-            # If SerpApi hits quota exhaustion / invalid key / rate limit, disable it for remaining queries in this session
             exc_str = str(exc).lower()
             if any(term in exc_str for term in ["quota", "429", "401", "unauthorized", "exhausted", "expired"]):
                 self.serpapi_available = False
@@ -1262,10 +1238,7 @@ class SearchManager:
         providers_used: list[str] | None = None,
         provider_report: list[dict] | None = None,
     ) -> list[SearchResult]:
-        """
-        Final rescue fallback using SerpApi.
-        Invoked only when normal providers collectively failed or produced no usable results.
-        """
+
         if all_results is None:
             all_results = []
         if seen_canonical is None:
@@ -1279,7 +1252,7 @@ class SearchManager:
         print("[SearchManager] Normal providers exhausted")
 
         serpapi_cls = ProviderRegistry.get_provider_class("serpapi")
-        has_serpapi_key = bool(os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", ""))
+        has_serpapi_key = bool((os.getenv("SERPAPI_KEY", "") or getattr(config, "SERPAPI_KEY", "")).strip())
         serpapi_enabled = getattr(config, "ENABLE_SERPAPI", True)
         is_rescue_available = bool(serpapi_cls and has_serpapi_key and serpapi_enabled)
 
@@ -1893,6 +1866,12 @@ class SearchManager:
         - Filters out providers not eligible for the given query
         """
         ordered: list[SearchProvider] = []
+
+        if self._mode and self._mode != "auto":
+            if ProviderRegistry.get_provider_class(self._mode):
+                instance = self._get_instance(self._mode)
+                if instance.is_available():
+                    return [instance]
 
         for name in self._priority:
             if not ProviderRegistry.get_provider_class(name):

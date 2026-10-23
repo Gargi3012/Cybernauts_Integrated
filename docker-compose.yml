@@ -1,0 +1,40 @@
+version: '3.8'
+
+# ==============================================================================
+# Docker Compose — Cybernauts Integrated Platform
+# Production Deployment Configuration for AWS EC2
+# ==============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${DOCKER_IMAGE:-cybernauts-app:latest}
+    container_name: cybernauts-app
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      # Persistent storage for SQLite leads database
+      - ./leads.db:/app/leads.db
+      # Persistent storage for uploaded/downloaded audio recordings
+      - ./static/recordings:/app/static/recordings
+      # Persistent application logs
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"

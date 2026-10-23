@@ -97,6 +97,8 @@ _PROCESSING_STATES: FrozenSet[ConversationState] = frozenset({
 TRANSITION_MAP: Dict[ConversationState, FrozenSet[ConversationState]] = {
     ConversationState.IDLE: frozenset({
         ConversationState.LISTENING,
+        ConversationState.GENERATING_AUDIO,
+        ConversationState.SPEAKING,
         ConversationState.CLOSED,
     }),
     ConversationState.LISTENING: frozenset({

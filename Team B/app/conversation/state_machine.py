@@ -169,7 +169,7 @@ class ConversationStateMachine:
             self._history.append(record)
 
         logger.bind(session_id=self._session_id).info(
-            "Transition | {old} → {new}{reason}",
+            "Transition | {old} -> {new}{reason}",
             old=old_state.value,
             new=target.value,
             reason=f" | reason={reason}" if reason else "",

@@ -42,6 +42,7 @@ async def rate_limit(request: Request):
 
 async def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
+    secret = get_jwt_secret()
     try:
         secret = get_jwt_secret()
         payload = jwt.decode(token, secret, algorithms=["HS256"])
@@ -122,11 +123,22 @@ async def register(payload: LoginRequest):
         logger.error(f"Database error during registration: {e}")
         raise HTTPException(status_code=500, detail="Failed to register user")
 
+@router.get("/api/personas")
+async def get_available_personas():
+    from app.services.persona_registry import list_personas
+    return {"personas": list_personas()}
+
+
 @router.post("/api/livekit/join", dependencies=[Depends(rate_limit), Depends(verify_jwt)])
 async def join_livekit_room(request: dict = None):
-    if os.getenv("TRANSPORT_MODE") != "livekit":
+    transport_mode = (os.getenv("TRANSPORT_MODE") or "livekit").strip().lower()
+    if transport_mode not in ("livekit", "webrtc"):
         raise HTTPException(status_code=400, detail="Not in LiveKit mode")
         
+    req_data = request or {}
+    persona_id = req_data.get("persona") or "shreya"
+    voice_id = req_data.get("voice") or None
+
     # Generate token
     from app.config import LIVEKIT_ROOM
     room_name = LIVEKIT_ROOM
@@ -146,13 +158,15 @@ async def join_livekit_room(request: dict = None):
         
         try:
             from app.main import run_voice_session
-            asyncio.create_task(run_voice_session())
+            asyncio.create_task(run_voice_session(persona=persona_id, voice=voice_id))
         except Exception as e:
             logger.exception(f"Failed to start voice session background task: {e}")
         
         return {
             "token": token.to_jwt(),
-            "roomUrl": os.getenv("LIVEKIT_URL")
+            "roomUrl": os.getenv("LIVEKIT_URL"),
+            "persona": persona_id,
+            "voice": voice_id
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate token: {str(e)}")
@@ -234,6 +248,9 @@ async def trigger_outbound_call(payload: dict):
                 "include_brand_introduction": resolved_brand_intro,
             }
         else:
+            record_call = bool(payload.get("record_call") or payload.get("record"))
+            persona = payload.get("persona") or "shreya"
+            voice = payload.get("voice") or None
             try:
                 from Pillar_2.outbound_call import place_outbound_call
                 call_id = await asyncio.to_thread(
@@ -245,9 +262,36 @@ async def trigger_outbound_call(payload: dict):
                     dispatch_id=dispatch_id,
                     include_brand_introduction=resolved_brand_intro,
                 )
-            except Exception:
+            except Exception as call_err:
+                logger.warning(f"place_outbound_call failed: {call_err}. Falling back to place_plivo_outbound_call...")
                 from Pillar_2.plivo_outbound import place_plivo_outbound_call
-                call_id = await asyncio.to_thread(place_plivo_outbound_call, phone_number, company_context_str)
+                call_id = await asyncio.to_thread(
+                    place_plivo_outbound_call,
+                    phone_number,
+                    company_context=company_context_str,
+                    persona=persona,
+                    voice=voice,
+                    lead_id=lead_id,
+                    session_id=session_id,
+                    dispatch_id=dispatch_id,
+                    record_call=record_call,
+                )
+
+            # Proactively pre-warm opening greeting TTS audio in background while carrier rings
+            try:
+                from app.adapters.pipecat.sarvam_tts_service import prewarm_tts_audio
+                from app.services.persona_registry import get_persona, resolve_opening_greeting
+                p_active = get_persona(persona or "shreya")
+                call_p_str = prompt_config.call_prompt if prompt_config else None
+                greet_text = resolve_opening_greeting(
+                    persona_id_or_voice=persona,
+                    company_context=company_context,
+                    call_prompt=call_p_str,
+                )
+                asyncio.create_task(prewarm_tts_audio(greet_text, voice=p_active.voice, sample_rate=8000))
+            except Exception as pw_err:
+                logger.debug(f"Pre-warm greeting notice: {pw_err}")
+
             return {
                 "status": "success",
                 "callSid": call_id,
@@ -313,11 +357,12 @@ async def get_call_history():
                 summary = s.client.summary.summary if (s.client and s.client.summary) else "No summary recorded."
                 duration_str = f"{s.duration}s" if s.duration else "—"
                 t_mode = os.getenv("TRANSPORT_MODE", "plivo").lower()
+                clean_phone = phone.replace("+", "").replace("-", "").replace(" ", "").strip()
                 if "plivo" in s.session_id.lower():
                     t_label = "Plivo Telephony"
                 elif "twilio" in s.session_id.lower():
                     t_label = "Twilio Telephony"
-                elif phone.startswith("+"):
+                elif clean_phone.isdigit() and phone != "unknown_client":
                     t_label = "Plivo Telephony" if t_mode == "plivo" else "Twilio Telephony"
                 else:
                     t_label = "LiveKit WebRTC"

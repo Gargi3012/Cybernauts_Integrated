@@ -55,6 +55,9 @@ def place_outbound_call(
 
     webhook_url = f"{public_base_url.rstrip('/')}/inbound-call"
     query_params = {}
+    if to_number:
+        query_params["phone"] = str(to_number)
+        query_params["to"] = str(to_number)
     if company_context:
         query_params["company_context"] = company_context
     if lead_id:
@@ -69,24 +72,50 @@ def place_outbound_call(
     if query_params:
         webhook_url += f"?{urllib.parse.urlencode(query_params)}"
 
-    hangup_url = f"{public_base_url.rstrip('/')}/plivo/hangup"
+    hangup_params = {}
     if lead_id:
-        hangup_url += f"?lead_id={urllib.parse.quote(str(lead_id))}"
+        hangup_params["lead_id"] = str(lead_id)
+    if session_id:
+        hangup_params["session_id"] = str(session_id)
+    hangup_url = f"{public_base_url.rstrip('/')}/plivo/hangup"
+    if hangup_params:
+        hangup_url += f"?{urllib.parse.urlencode(hangup_params)}"
 
     masked_to = f"{to_number[:3]}******{to_number[-4:]}" if len(to_number) > 7 else to_number
-    logger.info(f"Placing Plivo outbound call: to={masked_to}, from={plivo_phone_number}, lead_id={lead_id}, dispatch_id={dispatch_id}")
+    logger.info(f"Placing Plivo outbound call: to={masked_to}, from={plivo_phone_number}, lead_id={lead_id}, dispatch_id={dispatch_id}, record_call={record_call}")
 
-    response = client.calls.create(
-        from_=plivo_phone_number,
-        to_=to_number,
-        answer_url=webhook_url,
-        answer_method="POST",
-        hangup_url=hangup_url,
-        hangup_method="POST",
-    )
+    call_kwargs = {
+        "from_": plivo_phone_number,
+        "to_": to_number,
+        "answer_url": webhook_url,
+        "answer_method": "POST",
+        "hangup_url": hangup_url,
+        "hangup_method": "POST",
+    }
+
+    response = client.calls.create(**call_kwargs)
 
     call_id = getattr(response, "request_uuid", None) or getattr(response, "call_uuid", None) or str(response)
     logger.info(f"Plivo outbound call initiated successfully. Call ID: {call_id}")
+
+    # Proactively pre-warm greeting audio while telecom carrier connects and rings
+    try:
+        import asyncio
+        from app.adapters.pipecat.sarvam_tts_service import prewarm_tts_audio
+        from app.services.persona_registry import get_persona, resolve_opening_greeting
+        p_obj = get_persona(persona or "shreya")
+        greet = resolve_opening_greeting(
+            persona_id_or_voice=persona,
+            company_context=company_context,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(prewarm_tts_audio(greet, voice=p_obj.voice, sample_rate=8000))
+        except RuntimeError:
+            pass
+    except Exception as pw_err:
+        logger.debug(f"Outbound prewarm notice: {pw_err}")
+
     return str(call_id)
 
 

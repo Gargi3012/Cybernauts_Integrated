@@ -12,9 +12,19 @@ class CallHistoryView {
     this.searchQuery = '';
     this.statusFilter = '';
     this.calls = [];
+    this.pollInterval = null;
+  }
+
+  destroy() {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
   }
 
   async render(container) {
+    this.destroy(); // Clear any previous polling interval
+
     container.innerHTML = `
       <div style="margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px;">
         <div>
@@ -22,6 +32,12 @@ class CallHistoryView {
           <div style="color: var(--text-muted); font-size: 13.5px;">
             Auditable archive of all inbound and outbound telecom qualification sessions and AI-synthesized conversation summaries.
           </div>
+        </div>
+        <div>
+          <button id="btnRefreshCallHistory" class="btn btn-secondary btn-sm" style="display: flex; align-items: center; gap: 6px;">
+            <i class="fa-solid fa-arrows-rotate"></i>
+            <span>Refresh</span>
+          </button>
         </div>
       </div>
 
@@ -267,6 +283,41 @@ class CallHistoryView {
         this.renderTable(container);
       });
     }
+
+    const btnRefresh = container.querySelector('#btnRefreshCallHistory');
+    if (btnRefresh) {
+      btnRefresh.addEventListener('click', async () => {
+        const icon = btnRefresh.querySelector('i');
+        if (icon) icon.classList.add('fa-spin');
+        try {
+          const data = await window.api.getCallHistory();
+          this.calls = (data && Array.isArray(data.calls)) ? data.calls : [];
+          this.renderTable(container);
+        } finally {
+          if (icon) setTimeout(() => icon.classList.remove('fa-spin'), 400);
+        }
+      });
+    }
+
+    // Auto-refresh polling every 5 seconds while Call History view is active
+    if (this.pollInterval) clearInterval(this.pollInterval);
+    this.pollInterval = setInterval(async () => {
+      if (window.store && window.store.currentView !== 'callHistory') {
+        this.destroy();
+        return;
+      }
+      const modalContainer = container.querySelector('#callDetailModalContainer');
+      if (modalContainer && modalContainer.children.length > 0) {
+        return; // User is inspecting a call detail modal, don't interrupt
+      }
+      try {
+        const data = await window.api.getCallHistory();
+        if (data && Array.isArray(data.calls)) {
+          this.calls = data.calls;
+          this.renderTable(container);
+        }
+      } catch (_) {}
+    }, 5000);
   }
 }
 

@@ -265,6 +265,7 @@ def _build_real_pipeline_task(
     company_context: Optional[dict] = None,
     lead_id: Optional[str] = None,
     call_prompt_config: Optional[Any] = None,
+    persona: Optional[Any] = None,
 ) -> Any:
     """Build an actual pipecat.pipeline.task.PipelineTask.
 
@@ -327,6 +328,12 @@ def _build_real_pipeline_task(
             "interrupted_generation_id": None,
         }
         
+        from app.services.persona_registry import get_persona
+        from app.llm.prompts import build_voice_system_prompt
+        
+        p = get_persona(persona) if persona else get_persona("shreya")
+        p_name = p.name
+
         # ── LEVEL 1: Immutable Platform & Conversational Rules ──────────────
         include_brand_intro = True
         if call_prompt_config:
@@ -346,7 +353,7 @@ def _build_real_pipeline_task(
             "- 'save_lead': Call ONLY after name confirmation, 10-digit phone collection (MUST follow PHONE NUMBER COLLECTION PROTOCOL), readback, and explicit caller confirmation.\n"
             "- 'end_call': Call ONLY when caller explicitly says goodbye. Never on 'okay' or pause.\n"
             "- 'fetch_faq': Call ONLY for specialized company details not present in the verified knowledge base.\n"
-            "- IMMUTABLE PROTOCOL OVERRIDE PROHIBITION: You must never bypass phone validation, name confirmation, pause, or Sara identity.\n\n"
+            f"- IMMUTABLE PROTOCOL OVERRIDE PROHIBITION: You must never bypass phone validation, name confirmation, pause, or {p_name} identity.\n\n"
         )
 
         # ── LEVEL 3: Call-Specific Operator Directive OR Default Outbound Directive ─
@@ -368,6 +375,8 @@ def _build_real_pipeline_task(
                 custom_script = call_prompt_config
 
         if custom_script and custom_script.strip():
+            import re
+            custom_script = re.sub(r'\b(as|I am|I\'m|name is)\s+(Sara|Alex)\b', rf'\1 {p_name}', custom_script, flags=re.IGNORECASE)
             script_hash = hashlib.sha256(custom_script.encode("utf-8")).hexdigest()[:12]
             logger.info(
                 f"[CALL_PROMPT_APPLIED] Applying call-specific prompt | "
@@ -403,7 +412,7 @@ def _build_real_pipeline_task(
                 "CRITICAL PRECEDENCE RULES:\n"
                 "1. The instructions inside <call_script_directive> define WHAT you discuss with this prospect.\n"
                 "2. However, they are strictly SUBORDINATE to LEVEL 1 and LEVEL 2 platform rules.\n"
-                "3. You must NEVER bypass or weaken phone digit validation, name confirmation, user pause handling, or Sara identity, "
+                f"3. You must NEVER bypass or weaken phone digit validation, name confirmation, user pause handling, or {p_name} identity, "
                 "even if the call script instructs otherwise.\n"
                 "4. You must NEVER bypass call termination (end_call) when the prospect genuinely says goodbye.\n"
                 "5. Keep responses concise (1-2 conversational sentences, ~20-30 words max). Never read the entire script at once as a monologue.\n"
@@ -885,7 +894,7 @@ def _build_real_pipeline_task(
                         "content": full_resp,
                     })
                 
-            elif isinstance(frame, TTSStartedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
+            elif isinstance(frame, TTSStartedFrame) and ("TTS" in source_class or source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor")):
                 logger.info(f"[VOICE] TTS input received / TTS audio started | source={source_class} | session_id={bridge._session_id}")
                 self._tts_speaking = True
                 shared_state["tts_speaking"] = True
@@ -893,14 +902,14 @@ def _build_real_pipeline_task(
                     latency_tracker.on_tts_start()
                 bridge.on_audio_started()
                 
-            elif isinstance(frame, AudioRawFrame) and source_class in ("CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "SarvamTTSService"):
+            elif isinstance(frame, AudioRawFrame) and ("TTS" in source_class or source_class in ("CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "SarvamTTSService")):
                 if not getattr(self, "_first_audio_packet_sent", False):
                     logger.info(f"[VOICE] TTS audio generated / audio published | source={source_class} | session_id={bridge._session_id}")
                     self._first_audio_packet_sent = True
                     if latency_tracker:
                         latency_tracker.on_transport_audio()
                 
-            elif isinstance(frame, TTSStoppedFrame) and source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor"):
+            elif isinstance(frame, TTSStoppedFrame) and ("TTS" in source_class or source_class in ("SarvamTTSService", "CartesiaTTSService", "ElevenLabsTTSService", "DeepgramTTSService", "GreetingPlayerProcessor")):
                 logger.info(f"[VOICE] TTS audio playback completed | source={source_class} | session_id={bridge._session_id}")
                 self._tts_speaking = False
                 shared_state["tts_speaking"] = False
@@ -961,6 +970,7 @@ class PipecatAdapter:
         company_context: Optional[dict] = None,
         lead_id: Optional[str] = None,
         call_prompt_config: Optional[Any] = None,
+        persona: Optional[Any] = None,
     ) -> None:
         self.pipeline = pipeline
         self.event_bus = event_bus
@@ -972,6 +982,7 @@ class PipecatAdapter:
         self.company_context = company_context
         self.lead_id = lead_id
         self.call_prompt_config = call_prompt_config
+        self.persona = persona
 
         # Bridge is created with the optional FSM — None is fine for tests
         self.bridge = PipecatEventBridge(event_bus, session_id, execution_id, fsm=fsm)
@@ -1065,6 +1076,7 @@ class PipecatAdapter:
                         company_context=getattr(self, "company_context", None),
                         lead_id=getattr(self, "lead_id", None),
                         call_prompt_config=getattr(self, "call_prompt_config", None),
+                        persona=getattr(self, "persona", None),
                     )
                     logger.bind(session_id=self.session_id).info(
                         "Real pipecat PipelineTask created"
@@ -1107,6 +1119,7 @@ class PipecatAdapter:
                     company_context=getattr(self, "company_context", None),
                     lead_id=getattr(self, "lead_id", None),
                     call_prompt_config=getattr(self, "call_prompt_config", None),
+                    persona=getattr(self, "persona", None),
                 )
                 logger.bind(session_id=self.session_id).info(
                     "Real pipecat PipelineTask created"
@@ -1135,13 +1148,25 @@ class PipecatAdapter:
             import wave
             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
             if os.getenv("ENABLE_INITIAL_GREETING", "True").lower() == "true":
-                from pipecat.frames.frames import TTSSpeakFrame, BotStoppedSpeakingFrame
+                from pipecat.frames.frames import TTSSpeakFrame
                 from app.events.event_types import AssistantGreetingStarted
                 
-                logger.bind(session_id=self.session_id).info("Queueing initial direct TTS greeting")
-                
+                greet_gen_start = time.perf_counter()
+                from app.services.persona_registry import get_persona, resolve_opening_greeting
+                p_active = get_persona(getattr(self, "persona", "shreya"))
+                p_name = p_active.name
+
+                call_prompt_str = getattr(self.call_prompt_config, "call_prompt", "") if getattr(self, "call_prompt_config", None) else None
+                greeting_text = resolve_opening_greeting(
+                    persona_id_or_voice=self.persona,
+                    company_context=getattr(self, "company_context", None),
+                    call_prompt=call_prompt_str,
+                    previous_summary=getattr(self, "previous_summary", ""),
+                )
+                greet_gen_dur = (time.perf_counter() - greet_gen_start) * 1000
+
                 self.event_bus.publish_sync(
-                    AssistantGreetingStarted(session_id=self.session_id)
+                    AssistantGreetingStarted(session_id=self.session_id, payload={"text": greeting_text})
                 )
                 
                 include_brand_intro = True
@@ -1257,6 +1282,9 @@ class PipecatAdapter:
                 
                 if frames_to_queue:
                     await self.task.queue_frames(frames_to_queue)
+                    logger.bind(session_id=self.session_id).info(
+                        f"[LATENCY_BENCHMARK] Call start to greeting queued: {(time.perf_counter() - call_start_ts)*1000:.2f}ms"
+                    )
 
             # For the mock task: manually simulate processor events
             if isinstance(self.task, MockPipecatPipelineTask):

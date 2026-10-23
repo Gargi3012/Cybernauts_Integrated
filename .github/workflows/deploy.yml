@@ -1,0 +1,181 @@
+name: CI/CD Pipeline & EC2 Direct SSH Deployment
+
+# ==============================================================================
+# Cybernauts Integrated Platform — GitHub Actions CI/CD Workflow
+# Validates code, runs unit tests, and securely deploys to AWS EC2 via SSH/systemd
+# without requiring AWS API access keys, Amazon ECR, or remote Docker rebuilds.
+# ==============================================================================
+
+'on':
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'Deployment environment target'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  # ── STAGE 1: Code Quality, Lint & Unit Tests ──────────────────────────────
+  test:
+    name: Test & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+
+      - name: Python Syntax & Bytecode Compilation Check
+        run: |
+          python -m compileall server.py recording_manager.py "Team A" "Team B" routers
+
+      - name: Run Core Persona, Context, Health & Security Tests
+        env:
+          PYTHONPATH: .
+        run: |
+          pytest "Team B/tests/test_dynamic_personas.py" "Team B/tests/test_sliding_window_and_prompt_optimization.py" "Team B/tests/test_server_health.py" "Team B/tests/test_jwt_config.py" -v
+
+  # ── STAGE 2: Secure Direct Deployment to AWS EC2 over SSH ─────────────────
+  deploy:
+    name: Deploy to AWS EC2 (SSH / systemd)
+    needs: test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Validate Required Secrets
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST_KEY: ${{ secrets.EC2_HOST_KEY }}
+        run: |
+          if [ -z "$EC2_HOST" ]; then
+            echo "::error::GitHub secret EC2_HOST is not defined!"
+            exit 1
+          fi
+          if [ -z "$EC2_SSH_KEY" ]; then
+            echo "::error::GitHub secret EC2_SSH_KEY is not defined!"
+            exit 1
+          fi
+          if [ -z "$EC2_HOST_KEY" ]; then
+            echo "::error::GitHub secret EC2_HOST_KEY is not defined! For strict host verification against MITM attacks, please add the pinned EC2 public host key to repository secrets."
+            exit 1
+          fi
+          echo "All required deployment secrets (EC2_HOST, EC2_SSH_KEY, EC2_HOST_KEY) are configured."
+
+      - name: Configure SSH Authentication
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST_KEY: ${{ secrets.EC2_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Securely write private key with restricted permissions
+          echo "$EC2_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          # Strictly enforce verified pinned host key — do not perform unverified network scans
+          echo "$EC2_HOST_KEY" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          echo "Verified pinned host key installed in known_hosts."
+
+      - name: Build Clean Deployment Bundle
+        run: |
+          echo "Packaging application bundle (excluding git metadata, logs, local databases, and temporary caches)..."
+          OPTIONAL_INPUTS=()
+          if [ -d "data" ]; then
+            OPTIONAL_INPUTS+=("data")
+          fi
+
+          tar -czf deploy_bundle.tar.gz \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.env' \
+            --exclude='.env.local' \
+            --exclude='.env.*.local' \
+            --exclude='*.pem' \
+            --exclude='*.key' \
+            --exclude='venv' \
+            --exclude='*/venv' \
+            --exclude='.venv' \
+            --exclude='*/.venv' \
+            --exclude='__pycache__' \
+            --exclude='*/__pycache__' \
+            --exclude='*/*/__pycache__' \
+            --exclude='.pytest_cache' \
+            --exclude='*/.pytest_cache' \
+            --exclude='server_logs*' \
+            --exclude='*.log' \
+            --exclude='leads.db' \
+            --exclude='Team A/leads.db' \
+            --exclude='data/learned_semantics.json' \
+            --exclude='data/query_feedback_semantic.json' \
+            --exclude='data/semantic_company_cache.json' \
+            --exclude='data/rejection_stats.json' \
+            --exclude='output/*' \
+            --exclude='cookies/*' \
+            --exclude='static/recordings/*' \
+            server.py recording_manager.py requirements.txt requirements-prod.txt .env.example routers static scripts "Team A" "Team B" ${OPTIONAL_INPUTS[@]+"${OPTIONAL_INPUTS[@]}"}
+
+          echo "Deployment bundle created:"
+          ls -lh deploy_bundle.tar.gz
+
+      - name: Transfer and Deploy to AWS EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USERNAME || secrets.EC2_USER || 'ec2-user' }}
+          APP_DIR: ${{ vars.APP_DIR || '/home/ec2-user/apps/cybernauts-integrated' }}
+          APP_PORT: ${{ vars.APP_PORT || '8010' }}
+        run: |
+          echo "Connecting to EC2 instance ($EC2_USER@$EC2_HOST)..."
+
+          # 1. Ensure isolated application directory exists on EC2
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$EC2_USER@$EC2_HOST" \
+            "mkdir -p \"$APP_DIR\""
+
+          # 2. Upload deployment archive to isolated directory
+          scp -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            deploy_bundle.tar.gz "$EC2_USER@$EC2_HOST:$APP_DIR/deploy_bundle.tar.gz"
+
+          # 3. Explicitly extract bundle FIRST on EC2, set script permissions, and run isolated deployment
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$EC2_USER@$EC2_HOST" "
+            set -euo pipefail
+            cd \"$APP_DIR\"
+            echo 'Extracting deployment bundle on EC2...'
+            tar -xzf deploy_bundle.tar.gz
+            rm -f deploy_bundle.tar.gz
+            chmod +x scripts/deploy_ssh.sh
+            echo 'Executing isolated SSH deployment script...'
+            APP_DIR=\"$APP_DIR\" APP_PORT=\"$APP_PORT\" bash scripts/deploy_ssh.sh
+          "
+
+      - name: Cleanup SSH Credentials
+        if: always()
+        run: |
+          rm -rf ~/.ssh/id_rsa
+          echo "Temporary SSH credentials removed."

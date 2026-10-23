@@ -53,7 +53,83 @@ class CybernautsState {
     // Active Lead Qualification Call Tracking
     this.activeCall = null;
 
+    // AI Agent Personas (Shreya, Ritu, Ratan, Manan)
+    this.selectedPersona = 'shreya';
+    this.personas = [
+      {
+        id: 'shreya',
+        name: 'Shreya',
+        gender: 'female',
+        voice: 'shreya',
+        model: 'bulbul:v3',
+        role: 'Friendly Sales & Success',
+        tone: 'Warm & Conversational',
+        accent: 'Natural Hinglish',
+        avatar: '👩',
+        greeting_en: 'Hello, this is Shreya from Flowiz and Cybernauts. How can I help you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Shreya बोल रही हूँ। मैं आपकी क्या मदद कर सकती हूँ?',
+        sample_text: 'Hi, main Flowiz se Shreya bol rahi hoon. Hum aapki sales team ke calls ko automate karne me help karte hain.',
+        audio_sample: '/static/audio/shreya_sample.wav'
+      },
+      {
+        id: 'ritu',
+        name: 'Ritu',
+        gender: 'female',
+        voice: 'ritu',
+        model: 'bulbul:v3',
+        role: 'Client Onboarding & Operations',
+        tone: 'Calm & Supportive',
+        accent: 'Polite English / Hindi',
+        avatar: '👩‍💼',
+        greeting_en: 'Hello, this is Ritu from Flowiz and Cybernauts. How may I assist you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Ritu बोल रही हूँ। मैं आपकी क्या सहायता कर सकती हूँ?',
+        sample_text: 'Hello, main Flowiz se Ritu bol rahi hoon. Aapka platform onboarding process smooth aur simple banana hamari priority hai.',
+        audio_sample: '/static/audio/ritu_sample.wav'
+      },
+      {
+        id: 'ratan',
+        name: 'Ratan',
+        gender: 'male',
+        voice: 'ratan',
+        model: 'bulbul:v3',
+        role: 'Enterprise Solutions Consultant',
+        tone: 'Corporate & Authoritative',
+        accent: 'Corporate Hinglish',
+        avatar: '👨',
+        greeting_en: 'Hello, this is Ratan from Flowiz and Cybernauts. How can I help you today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Ratan बोल रहा हूँ। मैं आपकी क्या सहायता कर सकता हूँ?',
+        sample_text: 'Hi, main Flowiz se Ratan bol raha hoon. Hum enterprise businesses ke outbound lead operations ko automate karte hain.',
+        audio_sample: '/static/audio/ratan_sample.wav'
+      },
+      {
+        id: 'manan',
+        name: 'Manan',
+        gender: 'male',
+        voice: 'manan',
+        model: 'bulbul:v3',
+        role: 'Tech Automation & Product Advisor',
+        tone: 'Energetic & Modern',
+        accent: 'Tech Hinglish',
+        avatar: '👨‍💻',
+        greeting_en: 'Hey there, this is Manan from Flowiz and Cybernauts. How are you doing today?',
+        greeting_hi: 'नमस्ते, मैं Flowiz से Manan बोल रहा हूँ। आज मैं आपकी क्या सहायता कर सकता हूँ?',
+        sample_text: 'Hey! Main Flowiz se Manan bol raha hoon. Real-time voice AI pipelines aur automated qualification hamara core expertise hai.',
+        audio_sample: '/static/audio/manan_sample.wav'
+      }
+    ];
+
     this.listeners = new Map();
+  }
+
+  setPersona(personaId) {
+    if (!personaId) return;
+    const exists = this.personas.some(p => p.id === personaId);
+    this.selectedPersona = exists ? personaId : 'shreya';
+    this.notify('persona', this.selectedPersona);
+  }
+
+  getSelectedPersona() {
+    return this.personas.find(p => p.id === this.selectedPersona) || this.personas[0];
   }
 
   subscribe(key, callback) {
@@ -85,6 +161,29 @@ class CybernautsState {
   setLeads(leads) {
     this.allLeads = Array.isArray(leads) ? leads : [];
     this.notify('leadsUpdated', this.allLeads);
+  }
+
+  addLead(lead) {
+    if (!lead) return;
+    const domain = lead.domain || lead.website;
+    const existingIndex = this.allLeads.findIndex(l => 
+      (domain && (l.domain === domain || l.website === domain)) || 
+      (lead.id && l.id === lead.id)
+    );
+
+    if (existingIndex !== -1) {
+      this.allLeads[existingIndex] = { ...this.allLeads[existingIndex], ...lead };
+    } else {
+      this.allLeads.unshift(lead);
+    }
+
+    const cat = lead.industry || 'B2B Services';
+    if (cat) {
+      this.categories[cat] = (this.categories[cat] || 0) + 1;
+    }
+
+    this.notify('leadsUpdated', this.allLeads);
+    this.notify('categoriesUpdated', this.categories);
   }
 
   setCategories(cats) {

@@ -7,15 +7,24 @@ import plivo
 load_dotenv(override=False)
 
 
-def place_plivo_outbound_call(to_number: str, company_context: str | None = None) -> str:
-    server_base_url = (os.getenv("SERVER_BASE_URL") or os.getenv("PUBLIC_BASE_URL", "")).rstrip("/")
+def place_plivo_outbound_call(
+    to_number: str,
+    company_context: str | None = None,
+    persona: str | None = None,
+    voice: str | None = None,
+    lead_id: str | None = None,
+    session_id: str | None = None,
+    dispatch_id: str | None = None,
+    record_call: bool = False,
+) -> str:
+    server_base_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL", "")).rstrip("/")
     plivo_auth_id = os.getenv("PLIVO_AUTH_ID", "")
     plivo_auth_token = os.getenv("PLIVO_AUTH_TOKEN", "")
     plivo_phone_number = os.getenv("PLIVO_PHONE_NUMBER", "")
 
     if not server_base_url:
         raise ValueError(
-            "SERVER_BASE_URL is empty in .env — set it to your current public URL first "
+            "PUBLIC_BASE_URL is empty in .env — set it to your current public URL first "
             "(e.g. https://xxxx.ngrok-free.app)."
         )
     if not plivo_auth_id or not plivo_auth_token:
@@ -26,9 +35,25 @@ def place_plivo_outbound_call(to_number: str, company_context: str | None = None
     client = plivo.RestClient(auth_id=plivo_auth_id, auth_token=plivo_auth_token)
 
     # Webhook URL pointing to our Plivo answer endpoint
-    answer_url = f"{server_base_url}/plivo/inbound-call"
+    answer_url = f"{server_base_url}/inbound-call"
+    params = {}
     if company_context:
-        answer_url += f"?company_context={urllib.parse.quote(company_context)}"
+        params["company_context"] = company_context
+    if persona:
+        params["persona"] = persona
+    if voice:
+        params["voice"] = voice
+    if lead_id:
+        params["lead_id"] = str(lead_id)
+    if session_id:
+        params["session_id"] = str(session_id)
+    if dispatch_id:
+        params["dispatch_id"] = str(dispatch_id)
+    if record_call:
+        params["record_call"] = "true"
+
+    if params:
+        answer_url += f"?{urllib.parse.urlencode(params)}"
 
     logger.info(f"Placing Plivo outbound call: to={to_number}, from={plivo_phone_number}, answer_url={answer_url}")
 
@@ -46,4 +71,23 @@ def place_plivo_outbound_call(to_number: str, company_context: str | None = None
         or str(response)
     )
     logger.info(f"Plivo outbound call dispatched. UUID: {call_uuid}")
+
+    # Proactively pre-warm greeting audio while Plivo dials and phone rings
+    try:
+        import asyncio
+        from app.adapters.pipecat.sarvam_tts_service import prewarm_tts_audio
+        from app.services.persona_registry import get_persona, resolve_opening_greeting
+        p_obj = get_persona(persona or voice or "shreya")
+        greet = resolve_opening_greeting(
+            persona_id_or_voice=persona or voice,
+            company_context=company_context,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(prewarm_tts_audio(greet, voice=p_obj.voice, sample_rate=8000))
+        except RuntimeError:
+            pass
+    except Exception as pw_err:
+        logger.debug(f"Plivo prewarm notice: {pw_err}")
+
     return str(call_uuid)

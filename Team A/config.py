@@ -2,6 +2,10 @@ import os
 
 from dotenv import load_dotenv
 
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.dirname(_this_dir)
+load_dotenv(os.path.join(_parent_dir, ".env"))
+load_dotenv(os.path.join(_this_dir, ".env"))
 load_dotenv()
 
 

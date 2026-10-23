@@ -27,10 +27,13 @@ from loguru import logger
 
 from pipecat.processors.aggregators.llm_context import LLMContext
 try:
-    from openai._types import NOT_GIVEN, NotGiven
+    from pipecat.processors.aggregators.llm_context import NOT_GIVEN, NotGiven
 except ImportError:
-    NOT_GIVEN = object()
-    NotGiven = Any
+    try:
+        from openai._types import NOT_GIVEN, NotGiven
+    except ImportError:
+        NOT_GIVEN = object()
+        NotGiven = Any
 
 from app.services.phone_digit_normalizer import (
     PhoneDigitNormalizer,
@@ -508,7 +511,29 @@ class SlidingWindowLLMContext(LLMContext):
         tool_choice: Any = NOT_GIVEN,
         messages: Optional[List[dict]] = None,
     ):
-        super().__init__(messages=messages, tools=tools, tool_choice=tool_choice)
+        from pipecat.processors.aggregators.llm_context import NOT_GIVEN as PIPECAT_NOT_GIVEN
+
+        resolved_tools = tools
+        if (
+            resolved_tools is None
+            or resolved_tools is NOT_GIVEN
+            or resolved_tools is PIPECAT_NOT_GIVEN
+            or type(resolved_tools).__name__ == "NotGiven"
+            or ("openai" in str(type(resolved_tools)) and "NotGiven" in str(type(resolved_tools)))
+        ):
+            resolved_tools = PIPECAT_NOT_GIVEN
+
+        resolved_tool_choice = tool_choice
+        if (
+            resolved_tool_choice is None
+            or resolved_tool_choice is NOT_GIVEN
+            or resolved_tool_choice is PIPECAT_NOT_GIVEN
+            or type(resolved_tool_choice).__name__ == "NotGiven"
+            or ("openai" in str(type(resolved_tool_choice)) and "NotGiven" in str(type(resolved_tool_choice)))
+        ):
+            resolved_tool_choice = PIPECAT_NOT_GIVEN
+
+        super().__init__(messages=messages, tools=resolved_tools, tool_choice=resolved_tool_choice)
         self.session_id = session_id
         self.max_window_messages = max(2, max_window_messages)
         self.shared_state = shared_state if shared_state is not None else {}
@@ -590,7 +615,13 @@ class SlidingWindowLLMContext(LLMContext):
         for msg in messages:
             self.add_message(msg)
 
-    def get_messages(self, llm_specific_filter: Optional[str] = None) -> List[dict]:
+    def get_messages(
+        self,
+        llm_specific_filter: Optional[str] = None,
+        *args,
+        truncate_large_values: bool = False,
+        **kwargs,
+    ) -> List[dict]:
         """
         Constructs and returns the sliding window context for the LLM request.
         
@@ -598,7 +629,16 @@ class SlidingWindowLLMContext(LLMContext):
         - Index 0: System prompt enhanced with dynamic `<critical_conversation_memory>`
         - Index 1..N: Most recent `max_window_messages` conversation messages
         """
-        messages = self._messages
+        if llm_specific_filter is None:
+            messages = self._messages
+        else:
+            from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
+            messages = [
+                msg
+                for msg in self._messages
+                if not isinstance(msg, LLMSpecificMessage) or getattr(msg, "llm", None) == llm_specific_filter
+            ]
+
         if not messages:
             return []
 
@@ -641,6 +681,10 @@ class SlidingWindowLLMContext(LLMContext):
             recent_messages = non_system_messages
 
         result = [{"role": "system", "content": dynamic_system_content}] + recent_messages
+
+        if truncate_large_values and hasattr(LLMContext, "_truncate_large_values_from_messages"):
+            result = LLMContext._truncate_large_values_from_messages(result)
+
         return result
 
     @property

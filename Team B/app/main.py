@@ -369,9 +369,8 @@ async def handle_plivo_inbound_call(request: Request):
 
     # In Plivo, 'From' is caller, 'To' is dialed number, 'CallUUID' is call ID
     caller_phone = form_dict.get("From") or request.query_params.get("From", "")
-    to_phone = form_dict.get("To") or request.query_params.get("To", "")
+    to_phone = form_dict.get("To") or request.query_params.get("To", "") or form_dict.get("phone") or request.query_params.get("phone", "")
     call_id = form_dict.get("CallUUID") or request.query_params.get("CallUUID") or form_dict.get("call_uuid") or request.query_params.get("call_uuid", "")
-    phone_number = caller_phone if caller_phone else to_phone or "unknown_client"
 
     lead_id = form_dict.get("lead_id") or request.query_params.get("lead_id", "")
     domain = form_dict.get("domain") or request.query_params.get("domain", "")
@@ -380,7 +379,17 @@ async def handle_plivo_inbound_call(request: Request):
     company_context_raw = form_dict.get("company_context") or request.query_params.get("company_context", "")
     brand_intro_param = form_dict.get("include_brand_introduction") or request.query_params.get("include_brand_introduction", "")
 
-    is_outbound = bool(lead_id or domain or session_id or dispatch_id or company_context_raw)
+    from app.config import PLIVO_PHONE_NUMBER
+    agent_num_clean = (PLIVO_PHONE_NUMBER or "").replace("+", "").strip()
+    caller_clean = caller_phone.replace("+", "").strip()
+
+    is_outbound = bool(lead_id or domain or session_id or dispatch_id or company_context_raw or (agent_num_clean and caller_clean == agent_num_clean))
+
+    # On outbound calls from agent, the contact is the dialed person ('To'). On inbound, it is the caller ('From').
+    if is_outbound:
+        phone_number = to_phone if to_phone else (caller_phone or "unknown_client")
+    else:
+        phone_number = caller_phone if caller_phone else (to_phone or "unknown_client")
 
     client_id_str = ""
     previous_summary = ""
@@ -390,7 +399,7 @@ async def handle_plivo_inbound_call(request: Request):
     # company context are already authoritatively held in CallConfigRegistry / local state.
     # Remote Neon PostgreSQL MUST NOT block the answer webhook critical path.
     if is_outbound:
-        logger.info(f"Outbound qualification call detected | lead={lead_id or domain} | session={session_id} | dispatch={dispatch_id}. Bypassing synchronous remote DB pre-fetch.")
+        logger.info(f"Outbound qualification call detected | lead={lead_id or domain} | session={session_id} | dispatch={dispatch_id} | persona={persona}. Bypassing synchronous remote DB pre-fetch.")
         # Non-critical: sync client record in background asynchronously for post-call audit/analytics
         if phone_number and phone_number != "unknown_client":
             async def _bg_sync_client():
@@ -441,7 +450,7 @@ async def handle_plivo_inbound_call(request: Request):
         else:
             stream_base = f"{scheme}://{host or 'localhost:8000'}"
 
-    extra_headers = f"phone={phone_number};client_id={client_id_str};call_id={call_id};previous_summary={xml_escape(previous_summary)}"
+    extra_headers = f"phone={phone_number};client_id={client_id_str};call_id={call_id};persona={persona};voice={voice};previous_summary={xml_escape(previous_summary)}"
 
     if lead_id or domain:
         # Lead-aware stream routing to /ws with query params
@@ -474,9 +483,16 @@ async def handle_plivo_inbound_call(request: Request):
             plivo_params.append(f"include_brand_introduction={urllib.parse.quote(str(brand_intro_param))}")
         stream_url = f"{stream_base}/ws/plivo?{'&amp;'.join(plivo_params)}"
 
+    record_call = form_dict.get("record_call") == "true" or request.query_params.get("record_call") == "true"
+    record_xml = ""
+    if record_call:
+        public_url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("SERVER_BASE_URL", "")).rstrip("/")
+        rec_callback = f"{public_url}/api/telephony/recording-callback"
+        record_xml = f'    <Record action="{rec_callback}" method="POST" fileFormat="mp3" redirect="false" />\n'
+
     plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000" extraHeaders="{extra_headers}">
+{record_xml}    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000" extraHeaders="{extra_headers}">
         {stream_url}
     </Stream>
 </Response>
@@ -584,6 +600,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 brand_intro_query = websocket.query_params.get("include_brand_introduction") or custom_params.get("include_brand_introduction")
                 webhook_processing_start = float(custom_params.get("webhook_processing_start", 0.0))
                 previous_summary = custom_params.get("previous_summary", "")
+                persona_val = websocket.query_params.get("persona") or custom_params.get("persona") or "shreya"
+                voice_val = websocket.query_params.get("voice") or custom_params.get("voice")
 
                 company_context = None
                 if company_context_raw:
@@ -699,6 +717,8 @@ async def websocket_endpoint(websocket: WebSocket):
             connection_metrics=connection_metrics,
             session_id=session_id_val,
             dispatch_id=dispatch_id_val,
+            persona=persona_val,
+            voice=voice_val,
         )
     except WebSocketDisconnect as e:
         logger.warning(f"Plivo WebSocket disconnected in endpoint: code={e.code}, reason={e.reason}")
@@ -750,6 +770,8 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
     lead_id = websocket.query_params.get("lead_id", "") or websocket.query_params.get("domain", "")
     session_id_val = websocket.query_params.get("session_id", "")
     dispatch_id_val = websocket.query_params.get("dispatch_id", "")
+    persona_val = websocket.query_params.get("persona") or "shreya"
+    voice_val = websocket.query_params.get("voice") or None
     company_context = None
     previous_summary = ""
 
@@ -805,6 +827,10 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
                                 dispatch_id_val = v
                             elif k == "previous_summary" and not previous_summary:
                                 previous_summary = v
+                            elif k == "persona" and (not persona_val or persona_val == "shreya"):
+                                persona_val = v
+                            elif k == "voice" and not voice_val:
+                                voice_val = v
 
                 # In-memory atomic stream ownership claim (0.01ms, non-blocking)
                 async with _ACTIVE_STREAMS_LOCK:
@@ -904,6 +930,8 @@ async def plivo_websocket_endpoint(websocket: WebSocket):
             connection_metrics=connection_metrics,
             session_id=session_id_val,
             dispatch_id=dispatch_id_val,
+            persona=persona_val,
+            voice=voice_val,
         )
     except WebSocketDisconnect as e:
         logger.warning(f"Plivo WebSocket disconnected in endpoint: code={e.code}, reason={e.reason}")
@@ -949,11 +977,17 @@ async def run_voice_session(
     connection_metrics: dict = None,
     session_id: Optional[str] = None,
     dispatch_id: Optional[str] = None,
+    persona: Optional[str] = "shreya",
+    voice: Optional[str] = None,
 ) -> None:
     """Bootstrap and execute a single real-time voice session."""
 
     from app.db.connection import db_manager
     from app.repositories.session_repository import SessionRepository
+    from app.services.persona_registry import get_persona
+
+    active_persona = get_persona(persona or voice or "shreya")
+    resolved_voice = voice or active_persona.voice
 
     # ── 0. Call Prompt Configuration Resolution (Phase 5) ─────────────
     from app.services.call_config_registry import call_config_registry, CallPromptConfig
@@ -1006,16 +1040,29 @@ async def run_voice_session(
     logger.info("Session created | session_id={sid} | client={client} | custom_prompt={has_p}", 
                 sid=session_id, client=masked_phone, has_p=bool(call_prompt_config is not None))
     
-    # Persist the Session in DB (Non-blocking background task)
-    if client_id_str:
-        async def _persist_session_bg(s_id: str, c_id_str: str):
-            try:
-                c_id = uuid.UUID(c_id_str)
-                async with db_manager.get_session() as db:
-                    await SessionRepository.create_session(db, s_id, c_id)
-            except Exception as e:
-                logger.error(f"Failed to persist Session in background: {e}")
-        asyncio.create_task(_persist_session_bg(session_id, client_id_str))
+    # Persist the Session in DB (Non-blocking background task for both Telephony and WebRTC)
+    async def _persist_session_bg(s_id: str, c_id_str: str, p_num: str):
+        try:
+            from app.repositories.client_repository import ClientRepository
+            async with db_manager.get_session() as db:
+                c_id = None
+                if c_id_str:
+                    try:
+                        c_id = uuid.UUID(c_id_str)
+                    except ValueError:
+                        c_id = None
+                if not c_id:
+                    client_rec = await ClientRepository.get_or_create_client(db, p_num or "unknown_client")
+                    c_id = client_rec.id
+                    sess_data = await session_manager.get_session(s_id)
+                    if sess_data:
+                        sess_data.metadata["client_id"] = str(c_id)
+
+                await SessionRepository.create_session(db, s_id, c_id)
+                logger.info("Persisted active session in DB | session_id={sid} | client_id={cid}", sid=s_id, cid=c_id)
+        except Exception as e:
+            logger.error(f"Failed to persist Session in background: {e}")
+    asyncio.create_task(_persist_session_bg(session_id, client_id_str, phone_number))
 
     # ── 2. Event Bus ────────────────────────────────────────────────────
     event_bus = EventBus()
@@ -1127,7 +1174,13 @@ async def run_voice_session(
                     generated_summary = prev_summary_text  # fallback: don't lose old summary on failure
 
                 await SessionRepository.save_summary(db_session, c_id, generated_summary)
-                await SessionRepository.close_session(db_session, event.session_id, int(sess_data.duration_seconds))
+                await SessionRepository.close_session(
+                    db_session,
+                    event.session_id,
+                    duration=int(sess_data.duration_seconds),
+                    client_id=c_id,
+                    started_at=sess_data.created_at,
+                )
                 logger.info("Persisted call summary and closed DB session for {sid}", sid=event.session_id)
 
             # ── Team A Integration Feedback Loop (Section 13) ─────────────────
@@ -1199,7 +1252,12 @@ async def run_voice_session(
     )
 
     async def on_greeting_started(e: AssistantGreetingStarted):
-        await broadcast_frontend_event("greeting_started")
+        greet_text = ""
+        if hasattr(e, "payload") and isinstance(e.payload, dict):
+            greet_text = e.payload.get("text", "")
+        if greet_text:
+            await session_manager.add_message(session_id, role="assistant", content=greet_text)
+        await broadcast_frontend_event("greeting_started", {"text": greet_text})
 
     async def on_greeting_completed(e: AssistantGreetingCompleted):
         await broadcast_frontend_event("greeting_complete")
@@ -1305,9 +1363,10 @@ async def run_voice_session(
     pipeline_builder = PipelineFactory.create_voice_pipeline(
         event_bus=event_bus,
         session_id=session_id,
+        metadata={"tts": {"persona": active_persona.id, "voice": resolved_voice}}
     )
     pipeline = pipeline_builder.build()
-    logger.info("Pipeline DAG built | pipeline_id={pid}", pid=pipeline.pipeline_id)
+    logger.info(f"Pipeline DAG built | pipeline_id={pipeline.pipeline_id} | persona={active_persona.id} | voice={resolved_voice}")
 
     # ── 5. Transport Selection ──────────────────────────────────────────
     if not transport:
@@ -1315,7 +1374,7 @@ async def run_voice_session(
             from app.adapters.pipecat.transport import LiveKitTransportAdapter
             transport = LiveKitTransportAdapter(
                 room_url=LIVEKIT_URL,
-                bot_name=BOT_NAME,
+                bot_name=active_persona.name,
             )
             # LiveKitTransport does not have a register_events method to call here
             logger.info("LiveKitTransportAdapter ready | room={r}", r=LIVEKIT_URL)
@@ -1345,6 +1404,7 @@ async def run_voice_session(
         company_context=company_context,
         lead_id=lead_id,
         call_prompt_config=call_prompt_config,
+        persona=active_persona.id,
     )
     logger.info("PipecatAdapter ready | execution_id={eid}", eid=execution_id)
 

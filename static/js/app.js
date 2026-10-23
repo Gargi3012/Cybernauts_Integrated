@@ -13,9 +13,11 @@ class CybernautsApp {
       analytics: new AnalyticsView(),
       liveAgent: new LiveAgentView(),
       callHistory: new CallHistoryView(),
+      recordings: new RecordingsView(),
       settings: new SettingsView()
     };
     this.leadDetailView = new LeadDetailView();
+    this.leadCreateModal = new LeadCreateModal();
   }
 
   init() {
@@ -74,6 +76,17 @@ class CybernautsApp {
         }
       });
     }
+
+    // Global listener for CRM "Add Verified Lead" actions across views
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action="create-lead"], #btnOpenCreateLeadModal, #btnOverviewAddLead');
+      if (btn) {
+        e.preventDefault();
+        if (this.leadCreateModal) {
+          this.leadCreateModal.show();
+        }
+      }
+    });
   }
 
   setupStateSubscriptions() {
@@ -129,6 +142,73 @@ class CybernautsApp {
       }
     };
 
+    let authMode = 'login'; // 'login' or 'signup'
+
+    const titleEl = document.getElementById('auth-modal-title');
+    const subtitleEl = document.getElementById('auth-modal-subtitle');
+    const tabLogin = document.getElementById('tabAuthLogin');
+    const tabSignup = document.getElementById('tabAuthSignup');
+    const confirmGroup = document.getElementById('auth-confirm-group');
+    const submitText = document.getElementById('auth-submit-text');
+    const submitIcon = document.getElementById('auth-submit-icon');
+    const togglePrompt = document.getElementById('auth-toggle-prompt');
+    const btnToggleMode = document.getElementById('btn-auth-toggle-mode');
+    const noticeEl = document.getElementById('auth-status-notice');
+
+    const showNotice = (msg, isError = false) => {
+      if (!noticeEl) return;
+      noticeEl.style.display = 'block';
+      noticeEl.style.background = isError ? '#fef2f2' : '#ecfdf5';
+      noticeEl.style.color = isError ? '#991b1b' : '#065f46';
+      noticeEl.style.border = `1px solid ${isError ? '#fecaca' : '#a7f3d0'}`;
+      noticeEl.innerHTML = `<i class="fa-solid ${isError ? 'fa-circle-exclamation' : 'fa-circle-check'}" style="margin-right: 6px;"></i>${msg}`;
+    };
+
+    const clearNotice = () => {
+      if (noticeEl) {
+        noticeEl.style.display = 'none';
+        noticeEl.innerHTML = '';
+      }
+    };
+
+    const setAuthMode = (mode) => {
+      authMode = mode;
+      clearNotice();
+      const usernameInput = document.getElementById('auth-username');
+      const passwordInput = document.getElementById('auth-password');
+      const confirmInput = document.getElementById('auth-confirm-password');
+
+      if (mode === 'signup') {
+        if (tabSignup) tabSignup.classList.add('active');
+        if (tabLogin) tabLogin.classList.remove('active');
+        if (titleEl) titleEl.textContent = 'Create Administrator Account';
+        if (subtitleEl) subtitleEl.textContent = 'Register credentials to access Flowiz AI Voice & Telephony controls';
+        if (confirmGroup) confirmGroup.style.display = 'block';
+        if (submitText) submitText.textContent = 'Sign Up & Login';
+        if (submitIcon) submitIcon.className = 'fa-solid fa-user-plus';
+        if (togglePrompt) togglePrompt.textContent = 'Already have an account?';
+        if (btnToggleMode) btnToggleMode.textContent = 'Sign In here';
+        if (usernameInput && usernameInput.value === 'admin') usernameInput.value = '';
+      } else {
+        if (tabLogin) tabLogin.classList.add('active');
+        if (tabSignup) tabSignup.classList.remove('active');
+        if (titleEl) titleEl.textContent = 'Admin Authentication';
+        if (subtitleEl) subtitleEl.textContent = 'Sign in to unlock Flowiz AI Voice & Telephony controls';
+        if (confirmGroup) confirmGroup.style.display = 'none';
+        if (submitText) submitText.textContent = 'Sign In';
+        if (submitIcon) submitIcon.className = 'fa-solid fa-right-to-bracket';
+        if (togglePrompt) togglePrompt.textContent = "Don't have an account?";
+        if (btnToggleMode) btnToggleMode.textContent = 'Sign Up now';
+        if (usernameInput && !usernameInput.value) usernameInput.value = 'admin';
+      }
+      if (passwordInput) passwordInput.value = '';
+      if (confirmInput) confirmInput.value = '';
+    };
+
+    if (tabLogin) tabLogin.addEventListener('click', () => setAuthMode('login'));
+    if (tabSignup) tabSignup.addEventListener('click', () => setAuthMode('signup'));
+    if (btnToggleMode) btnToggleMode.addEventListener('click', () => setAuthMode(authMode === 'login' ? 'signup' : 'login'));
+
     const updateAuthUI = () => {
       let token = localStorage.getItem("jwt_token");
       if (token && isTokenExpired(token)) {
@@ -147,12 +227,12 @@ class CybernautsApp {
           btnHeaderAction.title = "Click to Log Out";
         }
       } else {
-        if (btnText) btnText.innerText = "Admin Auth";
+        if (btnText) btnText.innerText = "Sign In / Sign Up";
         if (btnIcon) btnIcon.className = "fa-solid fa-user-lock";
         if (btnHeaderAction) {
           btnHeaderAction.classList.remove('btn-secondary');
           btnHeaderAction.classList.add('btn-primary');
-          btnHeaderAction.title = "Click to Sign In";
+          btnHeaderAction.title = "Click to Sign In or Sign Up";
         }
       }
     };
@@ -169,6 +249,7 @@ class CybernautsApp {
             }
           }
         } else if (authOverlay) {
+          clearNotice();
           authOverlay.classList.remove('hidden');
         }
       });
@@ -194,21 +275,79 @@ class CybernautsApp {
       }
     });
 
-    if (btnLoginSubmit && authOverlay) {
-      btnLoginSubmit.addEventListener('click', async () => {
-        const usernameInput = document.getElementById('auth-username');
-        const passwordInput = document.getElementById('auth-password');
-        const username = usernameInput ? usernameInput.value : '';
-        const password = passwordInput ? passwordInput.value : '';
+    const handleAuthSubmit = async () => {
+      clearNotice();
+      const usernameInput = document.getElementById('auth-username');
+      const passwordInput = document.getElementById('auth-password');
+      const confirmInput = document.getElementById('auth-confirm-password');
 
-        if (!username || !password) {
-          alert("Please enter both username and password.");
+      const username = usernameInput ? usernameInput.value.trim() : '';
+      const password = passwordInput ? passwordInput.value : '';
+      const confirmPassword = confirmInput ? confirmInput.value : '';
+
+      if (!username || !password) {
+        showNotice("Please fill out both username and password.", true);
+        return;
+      }
+
+      if (authMode === 'signup') {
+        if (username.length < 3) {
+          showNotice("Username must be at least 3 characters long.", true);
+          return;
+        }
+        if (password.length < 6) {
+          showNotice("Password must be at least 6 characters long.", true);
+          return;
+        }
+        if (password !== confirmPassword) {
+          showNotice("Passwords do not match. Please re-enter.", true);
           return;
         }
 
         try {
-          btnLoginSubmit.disabled = true;
-          btnLoginSubmit.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Signing In...</span>';
+          if (btnLoginSubmit) {
+            btnLoginSubmit.disabled = true;
+            btnLoginSubmit.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Creating Account...</span>';
+          }
+
+          const regRes = await window.api.register(username, password);
+          if (regRes && (regRes.status === 'success' || regRes.message)) {
+            showNotice("✓ Account created! Signing in automatically...", false);
+
+            // Auto-login with the newly created account
+            const loginRes = await window.api.login(username, password);
+            if (loginRes && loginRes.token) {
+              setTimeout(() => {
+                authOverlay.classList.add('hidden');
+                updateAuthUI();
+                if (passwordInput) passwordInput.value = '';
+                if (confirmInput) confirmInput.value = '';
+                if (window.store.currentView === 'liveAgent' && this.views.liveAgent) {
+                  this.views.liveAgent.render(document.getElementById('viewContainer'));
+                }
+              }, 600);
+            } else {
+              setAuthMode('login');
+              showNotice("Account registered! Please sign in with your password.", false);
+            }
+          } else {
+            throw new Error(regRes?.detail || "Registration failed.");
+          }
+        } catch (err) {
+          showNotice("Sign Up Error: " + (err.message || err), true);
+        } finally {
+          if (btnLoginSubmit) {
+            btnLoginSubmit.disabled = false;
+            btnLoginSubmit.innerHTML = `<i class="fa-solid ${authMode === 'signup' ? 'fa-user-plus' : 'fa-right-to-bracket'}"></i><span>${authMode === 'signup' ? 'Sign Up & Login' : 'Sign In'}</span>`;
+          }
+        }
+      } else {
+        // Sign In mode
+        try {
+          if (btnLoginSubmit) {
+            btnLoginSubmit.disabled = true;
+            btnLoginSubmit.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i><span>Signing In...</span>';
+          }
 
           const res = await window.api.login(username, password);
           if (res.token) {
@@ -220,11 +359,25 @@ class CybernautsApp {
             }
           }
         } catch (err) {
-          alert("Login Failed: " + (err.message || err));
+          showNotice("Login Failed: " + (err.message || err), true);
         } finally {
-          btnLoginSubmit.disabled = false;
-          btnLoginSubmit.innerHTML = '<span>Sign In</span>';
+          if (btnLoginSubmit) {
+            btnLoginSubmit.disabled = false;
+            btnLoginSubmit.innerHTML = '<i class="fa-solid fa-right-to-bracket"></i><span>Sign In</span>';
+          }
         }
+      }
+    };
+
+    if (btnLoginSubmit) {
+      btnLoginSubmit.addEventListener('click', handleAuthSubmit);
+    }
+
+    const authForm = document.getElementById('auth-form');
+    if (authForm) {
+      authForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleAuthSubmit();
       });
     }
 
@@ -248,15 +401,41 @@ class CybernautsApp {
       if (catsRes && catsRes.categories) {
         window.store.setCategories(catsRes.categories);
       }
+
+      // Fetch personas from server to keep registry synchronized
+      try {
+        const personasRes = await window.api.getPersonas();
+        if (personasRes && personasRes.personas && personasRes.personas.length > 0) {
+          window.store.personas = personasRes.personas;
+        }
+      } catch (_) {}
+
+      this.updateRecordingCount();
     } catch (err) {
       console.warn("Initial data load notice:", err);
     }
   }
 
+  async updateRecordingCount() {
+    try {
+      const recRes = await window.api.getRecordings({ limit: 1 });
+      if (recRes && recRes.count !== undefined) {
+        const badge = document.getElementById('sidebarRecordingCount');
+        if (badge) badge.innerText = recRes.count;
+      }
+    } catch (_) {}
+  }
+
   handleRoute() {
+    // Clean up previous active view if it defined a destroy method
+    if (this.currentActiveView && typeof this.currentActiveView.destroy === 'function') {
+      try { this.currentActiveView.destroy(); } catch (_) {}
+    }
+
     const hash = window.location.hash.replace('#', '') || 'overview';
     const targetView = this.views[hash] ? hash : 'overview';
     window.store.currentView = targetView;
+    this.currentActiveView = this.views[targetView];
 
     // Update Sidebar Active state
     document.querySelectorAll('.sidebar-link').forEach(link => {
@@ -278,6 +457,7 @@ class CybernautsApp {
         analytics: 'Analytics',
         liveAgent: 'Live AI Voice Agent',
         callHistory: 'Call History & Transcripts',
+        recordings: 'Call Recordings & Audio Archive',
         settings: 'Diagnostics & Settings'
       };
       breadcrumb.innerText = titleMap[targetView] || targetView;
